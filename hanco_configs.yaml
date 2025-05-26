@@ -1,0 +1,28 @@
+IMG_SIZE: 256  # 256
+PHASE: ['train', 'eval', 'test']
+
+OBMAN_DATA_ROOT: None #  'D:\\datasets\\obman\\obman'
+HANCO_DATA_ROOT: '../data/minje/HanCo/'
+EGO_DATA_ROOT: None # 'D:\\datasets\\EgoDexter'
+HAMER_DATA_ROOT: None # '/root/data/ty_dataset/OXR/240908_ego/'
+MODEL:
+  NAME: 'LargeModel' # Small Model
+  SPIRAL:
+    TYPE: 'DSConv'
+  DIM: '3D' # 3D or 2.5D
+  BACKBONE_PRETRAIN: False # 'pretrain/backbone_freihand.pth'
+  PRETRAIN:  # 'pretrain/L1_41_epoch.pth' # 'out/06-24_14-46/L2_LargeModel.pth'
+   #'pretrain/ETRI_256_large.pth' # 'out/01-23_17-00/LargeModel_24.pth' #  'pretrain/Pretrained_SL.pth' # 'pretrain/ETRI_256_large.pth' # 'pretrain/ETRI_256_large.pth'  # 'out/11-24_16-26/LargeModel_7.pth' # 'pretrain\\ETRI_224_small.pth' 
+TRAIN:
+  EPOCHS: 100
+  BATCH_SIZE: 8
+  LR: 0.0001
+  GPU_ID: 0
+  WEIGHT_DECAY: 0
+VAL:
+  SAVE_PRED: True
+  BATCH_SIZE: 32
+TEST:
+  BATCH_SIZE: 1
+SAVE:
+  FOLDER_PATH: 'out/'

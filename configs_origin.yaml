@@ -1,0 +1,35 @@
+IMG_SIZE: 128  # 256
+PHASE: ['train', 'eval', 'test']
+
+OBMAN_DATA_ROOT: None #  'D:\\datasets\\obman\\obman'
+HANCO_DATA_ROOT: None # '../data/minje/HanCo/'
+EGO_DATA_ROOT: None # 'D:\\datasets\\EgoDexter'
+HAMER_DATA_ROOT: '/root/data/ty_dataset/OXR/240908_ego/'
+FREI_DATA_ROOT: '/root/data/ty_dataset/freihand'
+MODEL:
+  NAME: 'Origin' # MobRecon origin
+  SPIRAL:
+    TYPE: 'DSConv'
+    OUT_CHANNELS: [32, 64, 128, 256]
+    DOWN_SCALE: [2, 2, 2, 2]
+    LEN: [9, 9, 9, 9]
+    DILATION: [1, 1, 1, 1]
+  DIM: '3D' # 3D or 2.5D
+  BACKBONE_PRETRAIN: False # 'pretrain/backbone_freihand.pth'
+  PRETRAIN: None # origin mobrecon pth
+  KPTS_NUM: 21
+  LATENT_SIZE: 256
+
+TRAIN:
+  EPOCHS: 100
+  BATCH_SIZE: 32
+  LR: 0.0001 # fine-tune 1e-4
+  GPU_ID: 0
+  WEIGHT_DECAY: 0
+VAL:
+  SAVE_PRED: True
+  BATCH_SIZE: 32
+TEST:
+  BATCH_SIZE: 1
+SAVE:
+  FOLDER_PATH: '/root/data/minje/mobrecon_ckpt' # on data2  mount
