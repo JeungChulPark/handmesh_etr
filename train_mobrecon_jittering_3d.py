@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader, random_split
 # from torch.utils.tensorboard import SummaryWriter
 from torchvision.transforms.functional import to_pil_image
 
-import wandb
+# import wandb
 
 from utils import *
 
@@ -127,8 +127,8 @@ def main(args, log_every=500):
                 gt_2d = draw_joint2D(img, xy.detach().cpu(), idx=0)
                 pred_2d_vis = draw_joint2D(img, pred_xy.detach().cpu(), idx=0)
 
-                log_dict["gt"] = wandb.Image(to_pil_image(gt_2d))
-                log_dict["pred_25d"] = wandb.Image(to_pil_image(pred_2d_vis))
+                # log_dict["gt"] = wandb.Image(to_pil_image(gt_2d))
+                # log_dict["pred_25d"] = wandb.Image(to_pil_image(pred_2d_vis))
 
                 # wandb.log(log_dict, step=steps)
 
