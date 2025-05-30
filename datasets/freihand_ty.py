@@ -37,13 +37,13 @@ class Freihand(Dataset):
             prefix = "evaluation_{}.json"
             i2l_suffix = "freihand_eval_{}.json"
 
-        self.image_dir = os.path.join(r"D:\Datasets\Hand Dataset\FreiHAND\FreiHAND_pub_v2", img_path)
+        self.image_dir = os.path.join(r"../../Datasets/Hand Dataset/FreiHAND/FreiHAND_pub_v2", img_path)
         self.image_names = np.sort(os.listdir(self.image_dir))  # 130240
         self.image_size = [img_size, img_size]  # [224, 224] due to ViT
-        self.i2l_annot_path = os.path.join(r"D:\Datasets\Hand Dataset\FreiHAND\FreiHAND_pub_v2", "i2l")
+        self.i2l_annot_path = os.path.join(r"../../Datasets/Hand Dataset/FreiHAND/FreiHAND_pub_v2", "i2l")
         self.img_size = img_size
 
-        dataset_path = r"D:\Datasets\Hand Dataset\FreiHAND\FreiHAND_pub_v2"
+        dataset_path = r"../../Datasets/Hand Dataset/FreiHAND/FreiHAND_pub_v2"
         self.verts_path = os.path.join(dataset_path, prefix.format("verts"))
         self.mano_path = os.path.join(dataset_path, prefix.format("mano"))
         self.joint_path = os.path.join(dataset_path, prefix.format("xyz"))
@@ -83,6 +83,8 @@ class Freihand(Dataset):
             ]
         )
 
+        self.to_tensor_transform = transforms.ToTensor()
+
         print(f"{self.mode} dataset is loaded, length of annotations: {len(self.verts)}")
 
     def __len__(self):
@@ -90,10 +92,10 @@ class Freihand(Dataset):
 
     def __getitem__(self, idx):
         image_name = self.image_names[idx]
-        img = load_img(os.path.join(self.image_dir, image_name))
+        ori_img = load_img(os.path.join(self.image_dir, image_name))
 
         aug_img, img2bb_trans, bb2img_trans, rot, _, cam, cam_nh, no_rot_trans = augmentation(
-            img,
+            ori_img,
             self.bbox[idx],
             self.mode,
             exclude_flip=True,
@@ -125,6 +127,7 @@ class Freihand(Dataset):
         # align_verts = verts - root_xyz # wrist-oriented coord
 
         item = {
+            "ori_image": self.to_tensor_transform(ori_img) / 255.0,
             "img": self.img_transform(aug_img.astype(np.float32)) / 255.0,
             "joint": joint,
             "align_joint": align_joint,

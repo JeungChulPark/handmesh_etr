@@ -13,6 +13,7 @@ from models.mobrecon_ds import LargeModel_Extra
 from datasets.freihand_ty import Freihand
 
 from torch.utils.data import DataLoader, random_split
+from torchvision.transforms import ToTensor
 
 # from torch.utils.tensorboard import SummaryWriter
 from torchvision.transforms.functional import to_pil_image
@@ -53,6 +54,7 @@ def main():
     with torch.no_grad():
         for i, item_dict in enumerate(tqdm(eval_dataloader)):
             img = item_dict["img"].float().to(device)
+            original_image = item_dict["ori_image"]
             kps3d = item_dict["align_joint"].float().to(device)  # normalize in [0, 1]
             bs = img.shape[0]
             output_dict = model(
@@ -64,7 +66,7 @@ def main():
                     output_dict["keypoints"] + item_dict["root"][:, None, :].float().to(device),
                     item_dict["cam"].float().to(device),
                 )
-                / 256.0
+                / 224.0
             )
 
             # keypoints_2d = projectPoints(output_dict["keypoints"].detach().cpu()[0], item_dict["K"][0])
@@ -72,12 +74,12 @@ def main():
             # keypoints_2d_absolute = keypoints_2d + root_xy
             # print(keypoints_2d_absolute)
 
-            # for i in range(len(output_dict["keypoints"])):
-            #     pred_2d_vis = draw_joint2D(img, pred_xy, idx=i)
-            #     pred_2d_vis = to_pil_image(pred_2d_vis)
+            for i in range(len(output_dict["keypoints"])):
+                pred_2d_vis = draw_joint2D(original_image, pred_xy, idx=i)
+                pred_2d_vis = to_pil_image(pred_2d_vis)
 
-            #     pred_2d_vis.save(result_image_dir + f"/{image_idx}.png")
-            #     image_idx += 1
+                pred_2d_vis.save(result_image_dir + f"/{image_idx}.png")
+                image_idx += 1
 
             mpjpe = torch.sqrt(((output_dict["keypoints"] - kps3d) ** 2).sum(dim=-1)).mean() * 1000.0
             test_epoch_mpjpe += mpjpe * bs
