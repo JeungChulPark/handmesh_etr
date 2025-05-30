@@ -1,6 +1,6 @@
 pycocotools
 mediapipe
-yaml
+pyyaml
 tqdm
 opencv-python
 yacs
