@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader, random_split
 # from torch.utils.tensorboard import SummaryWriter
 from torchvision.transforms.functional import to_pil_image
 
-# import wandb
+import wandb
 
 from utils import *
 
@@ -73,14 +73,14 @@ def main(args, log_every=500):
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100000, gamma=0.9)
 
     train_epoch = range(0, args.epoch)
-    for epoch in train_epoch:
+    for epoch in tqdm(train_epoch, leave=True, position=1):
         iter = 0
         epoch_loss = 0
         epoch_mpjpe = 0
 
         model.train()
 
-        for i, item_dict in enumerate(tqdm(train_dataloader)):
+        for i, item_dict in enumerate(tqdm(train_dataloader, leave=False, position=2)):
             steps = len(train_dataloader) * epoch + i
             iter_loss = 0.0
             optimizer.zero_grad()
@@ -127,13 +127,13 @@ def main(args, log_every=500):
                 gt_2d = draw_joint2D(img, xy.detach().cpu(), idx=0)
                 pred_2d_vis = draw_joint2D(img, pred_xy.detach().cpu(), idx=0)
 
-                # log_dict["gt"] = wandb.Image(to_pil_image(gt_2d))
-                # log_dict["pred_25d"] = wandb.Image(to_pil_image(pred_2d_vis))
+                log_dict["gt"] = wandb.Image(to_pil_image(gt_2d))
+                log_dict["pred_25d"] = wandb.Image(to_pil_image(pred_2d_vis))
 
-                # wandb.log(log_dict, step=steps)
+                wandb.log(log_dict, step=steps)
 
         log_dict = {"train_loss": epoch_loss / iter, "train_mpjpe": epoch_mpjpe / iter}
-        # wandb.log(log_dict, step=steps)
+        wandb.log(log_dict, step=steps)
 
         if (epoch + 1) % 2 == 0:
             save_dir = os.path.join(ckpt_dir, f"{epoch+1}.pt")
@@ -144,7 +144,7 @@ def main(args, log_every=500):
 
         model.eval()
         with torch.no_grad():
-            for i, item_dict in enumerate(tqdm(test_dataloader)):
+            for i, item_dict in enumerate(tqdm(test_dataloader, leave=False, position=2)):
                 img = item_dict["image"].float().to(device)
                 kps3d = item_dict["keypoints3D"].float().to(device)  # normalize in [0, 1]
                 output_dict = model(
@@ -169,17 +169,17 @@ def main(args, log_every=500):
         gt_2d = draw_joint2D(img, xy, idx=0)
         pred_2d_vis = draw_joint2D(img, pred_xy.detach().cpu(), idx=0)
 
-        log_dict["test_gt"] = to_pil_image(gt_2d)
-        log_dict["test_pred_25d"] = to_pil_image(pred_2d_vis)
+        log_dict["test_gt"] = wandb.Image(to_pil_image(gt_2d))
+        log_dict["test_pred_25d"] = wandb.Image(to_pil_image(pred_2d_vis))
 
-        # wandb.log(log_dict, step=steps)
+        wandb.log(log_dict, step=steps)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--exp", type=str, help="Save experiement name")
-    parser.add_argument("--batch", default=50, type=int, dest="batch_size")
-    parser.add_argument("--epoch", default=250, type=int, dest="epoch")
+    parser.add_argument("--batch", default=250, type=int, dest="batch_size")
+    parser.add_argument("--epoch", default=200, type=int, dest="epoch")
     parser.add_argument("--cfg", default="./configs.yaml")
 
     args = parser.parse_args()
@@ -187,16 +187,16 @@ if __name__ == "__main__":
     cfg = load_cfg(args.cfg)
     #    device = setup_runtime(args)
 
-    # run = wandb.init(project="OXR_mobrecon", name=args.exp, job_type="train")
-    # wandb.run.log_code(
-    #     root=".",
-    #     include_fn=lambda p: any(
-    #         p.endswith(ext) for ext in (".py", ".json", ".yaml", ".md", ".txt.", ".gin")
-    #     ),
-    #     exclude_fn=lambda p: any(s in p for s in ("output", "tmp", "wandb", ".git", ".vscode")),
-    # )
+    run = wandb.init(project="OXR_mobrecon", name=args.exp, job_type="train")
+    wandb.run.log_code(
+        root=".",
+        include_fn=lambda p: any(
+            p.endswith(ext) for ext in (".py", ".json", ".yaml", ".md", ".txt.", ".gin")
+        ),
+        exclude_fn=lambda p: any(s in p for s in ("output", "tmp", "wandb", ".git", ".vscode")),
+    )
 
     main(args)  # throw exp name
 
-    # wandb.finish()
+    wandb.finish()
     time.sleep(3)
