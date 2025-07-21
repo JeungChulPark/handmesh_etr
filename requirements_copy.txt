@@ -4,3 +4,5 @@ pyyaml
 tqdm
 opencv-python
 yacs
+onnx
+wandb
