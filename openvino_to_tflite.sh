@@ -1,0 +1,2 @@
+ovc pretrain/handmesh_etr_opt.onnx --input "[1,3,256,256]" --output_model pretrain/handmesh_etr_opt.xml
+openvino2tensorflow --model_path pretrain/handmesh_etr_opt.xml --model_output_path model/saved_model --output_saved_model --output_h5 --output_pb --output_no_quant_float32_tflite --output_weight_quant_tflite --output_float16_quant_tflite

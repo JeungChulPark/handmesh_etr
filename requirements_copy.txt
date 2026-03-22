@@ -1,0 +1,12 @@
+pycocotools
+mediapipe
+pyyaml
+tqdm
+opencv-python
+yacs
+onnx
+wandb
+tensorflow
+onnx-tf
+tensorflow_probability
+typing_extensions
