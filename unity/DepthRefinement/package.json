@@ -1,0 +1,30 @@
+{
+  "name": "com.handmesh.depthrefinement",
+  "version": "0.1.0",
+  "displayName": "Depth-Aware Hand Pose Refinement",
+  "description": "Refines RGB Recon (MobRecon) 3D hand joints using AR Foundation device depth (iOS LiDAR sceneDepth / cross-platform environmentDepth). Joint-wise depth sampling, shift-only root-depth alignment, confidence fusion, bone-length constraint, and One-Euro temporal filtering. Mobile-optimized, 30 FPS target.",
+  "unity": "2022.3",
+  "dependencies": {
+    "com.unity.xr.arfoundation": "5.1.0",
+    "com.unity.xr.arkit": "5.1.0",
+    "com.unity.sentis": "2.1.0"
+  },
+  "keywords": [
+    "hand-tracking",
+    "ar-foundation",
+    "depth",
+    "lidar",
+    "mobrecon",
+    "xr"
+  ],
+  "samples": [
+    {
+      "displayName": "Debug Visualization",
+      "description": "Draws RGB vs refined joints and bones; colors joints by wasRefined.",
+      "path": "Samples~/DebugVisualization"
+    }
+  ],
+  "author": {
+    "name": "handmesh_etr"
+  }
+}

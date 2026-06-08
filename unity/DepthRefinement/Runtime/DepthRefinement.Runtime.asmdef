@@ -1,0 +1,32 @@
+{
+  "name": "HandMesh.DepthRefinement.Runtime",
+  "rootNamespace": "HandMesh.DepthRefinement",
+  "references": [
+    "Unity.XR.ARFoundation",
+    "Unity.XR.ARSubsystems",
+    "Unity.XR.CoreUtils",
+    "Unity.Sentis",
+    "Unity.Collections",
+    "Unity.Mathematics"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [
+    {
+      "name": "com.unity.xr.arfoundation",
+      "expression": "",
+      "define": "ARFOUNDATION_PRESENT"
+    },
+    {
+      "name": "com.unity.sentis",
+      "expression": "",
+      "define": "SENTIS_PRESENT"
+    }
+  ],
+  "noEngineReferences": false
+}
