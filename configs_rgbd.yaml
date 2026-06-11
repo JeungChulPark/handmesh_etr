@@ -1,0 +1,36 @@
+IMG_SIZE: 256  # 256
+PHASE: ['train', 'eval', 'test']
+
+OBMAN_DATA_ROOT: None
+HANCO_DATA_ROOT: '../data/minje/HanCo/'
+EGO_DATA_ROOT: None
+HAMER_DATA_ROOT: '/root/data/ty_dataset/OXR/240908_ego/'
+MODEL:
+  NAME: 'LargeModel_Extra_RGBD'
+  IN_CHANS: 4          # 3 = RGB, 4 = RGB + depth (early fusion)
+  SPIRAL:
+    TYPE: 'DSConv'
+  DIM: '3D'
+  BACKBONE_PRETRAIN: False
+  PRETRAIN: ''         # optional: RGB ckpt to warm-start (stem is reinit for 4ch via strict=False)
+TRAIN:
+  EPOCHS: 100
+  BATCH_SIZE: 32
+  LR: 0.0001
+  GPU_ID: 0
+  WEIGHT_DECAY: 0
+# Synthetic depth channel (datasets/depth_synth.py). These are the dataset
+# defaults; train_mobrecon_rgbd.py CLI (--depth_sigma/--depth_dropout) overrides
+# sigma/dropout for sensor-quality sweeps.
+DEPTH:
+  SIGMA: 0.005         # per-pixel Gaussian depth noise std (m)
+  DROPOUT_P: 0.05      # fraction of valid depth pixels dropped (speckle holes)
+  QUANT: 0.001         # depth quantisation step (m)
+  NORM_SCALE: 0.1      # metres mapped to 1.0 after median-centring
+VAL:
+  SAVE_PRED: True
+  BATCH_SIZE: 32
+TEST:
+  BATCH_SIZE: 1
+SAVE:
+  FOLDER_PATH: 'out/'

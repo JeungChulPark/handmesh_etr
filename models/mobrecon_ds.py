@@ -153,6 +153,45 @@ class LargeModel_Extra_onnx(nn.Module):
         return pred25d
 
 
+class LargeModel_Extra_RGBD(nn.Module):
+    """RGB-D variant of LargeModel_Extra: early-fusion 4-channel input.
+
+    Identical to LargeModel_Extra except the backbone stem accepts `in_chans`
+    channels (RGB + 1 depth = 4). The depth channel is the metric depth produced
+    by `datasets/depth_synth.py` (or a real sensor), normalised to ~[-1, 1].
+
+    The number of input channels is read from cfg.MODEL.IN_CHANS (default 4) so
+    the same class also serves an RGB-only ablation (IN_CHANS=3).
+    """
+
+    def __init__(self, cfg):
+        super(LargeModel_Extra_RGBD, self).__init__()
+        self.cfg = cfg
+        self.latent_size = 1024  # 256 --> 1024   240 --> 900
+        self.in_chans = int(cfg.MODEL.get("IN_CHANS", 4)) if hasattr(cfg, "MODEL") else 4
+        self.backbone = DenseStack_Backbone_like_prev(
+            latent_size=self.latent_size, kpts_num=21, in_chans=self.in_chans
+        )
+
+    def forward(self, x):
+        pred25d = self.backbone(x)
+        return {"keypoints": pred25d}
+
+
+class LargeModel_Extra_RGBD_onnx(nn.Module):
+    """ONNX-export twin of LargeModel_Extra_RGBD (returns the raw tensor)."""
+
+    def __init__(self, in_chans=4):
+        super(LargeModel_Extra_RGBD_onnx, self).__init__()
+        self.latent_size = 1024
+        self.backbone = DenseStack_Backbone_like_prev(
+            latent_size=self.latent_size, kpts_num=21, in_chans=in_chans
+        )
+
+    def forward(self, x):
+        return self.backbone(x)
+
+
 class SmallModel(nn.Module):
     def __init__(
         self,

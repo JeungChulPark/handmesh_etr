@@ -638,10 +638,12 @@ class DenseStack_Backbone_prev(nn.Module):
 
 
 class DenseStack_Backbone_like_prev(nn.Module):
-    def __init__(self, input_channel=64, out_channel=24, latent_size=256, kpts_num=21, pretrain=False):
+    def __init__(self, input_channel=64, out_channel=24, latent_size=256, kpts_num=21, pretrain=False, in_chans=3):
         super(DenseStack_Backbone_like_prev, self).__init__()
+        # in_chans: 3 for RGB (default, backward compatible), 4 for RGB-D early fusion.
+        self.in_chans = in_chans
         self.pre_layer = nn.Sequential(
-            conv_layer(3, input_channel // 2, 3, 2, 1), mobile_unit(input_channel // 2, input_channel)
+            conv_layer(in_chans, input_channel // 2, 3, 2, 1), mobile_unit(input_channel // 2, input_channel)
         )
         self.thrink = conv_layer(input_channel * 4, input_channel)
         self.dense_stack1 = DenseStack(input_channel, out_channel)

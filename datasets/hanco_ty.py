@@ -13,10 +13,12 @@ from tqdm import tqdm
 
 from datasets.augmentation import *
 from datasets.dataset_utils import *
+from datasets.depth_synth import render_hand_depth, add_sensor_noise, normalize_depth
 
 # from augmentation import *
 # from dataset_utils import *
 import random
+import cv2
 
 from yacs.config import CfgNode as CN
 
@@ -427,9 +429,23 @@ def random_translate_pose(joint_uvd, weight=1.0):
 
 
 class HanCo_ETRI_jitter(Dataset):
-    def __init__(self, config=None, mode="train", img_size=256, limit=2e3):
+    def __init__(self, config=None, mode="train", img_size=256, limit=2e3,
+                 with_depth=False, depth_cfg=None, depth_source="render", depth_root=None):
+        # with_depth: if True, __getitem__ returns a 4-channel [R,G,B,D] image,
+        #   where D is a synthetic metric-depth channel rendered from the GT hand
+        #   geometry (see datasets/depth_synth.py) and corrupted by a sensor noise
+        #   model. Default False keeps the original RGB-only behaviour.
+        # depth_cfg: dict of knobs (see _default_depth_cfg) for the noise model.
+        # depth_source: "render" renders the metric depth on-the-fly from the GT
+        #   joints; "cache" loads a pre-rendered 16-bit-mm PNG written by
+        #   datasets/gen_hanco_depth.py (much faster, identical geometry).
+        # depth_root: cache directory (default <hanco_root>/depth).
+        self.with_depth = with_depth
+        self.depth_cfg = {**self._default_depth_cfg(), **(depth_cfg or {})}
+        self.depth_source = depth_source
         # self.hanco_root -> hanco root
-        self.hanco_root = r"D:\Datasets\Hand Dataset\HanCo"
+        self.hanco_root = r"/home/jucpark/DeepLearning/Datasets/Hand Dataset/HanCo"
+        self.depth_root = depth_root or os.path.join(self.hanco_root, "depth")
         self.image_dir = os.path.join(self.hanco_root, "rgb")
         self.img_size = img_size  # int
         self.mode = mode
@@ -438,15 +454,24 @@ class HanCo_ETRI_jitter(Dataset):
         self.train_cam = os.path.join(self.hanco_root, "calib")
 
         mp_anno = os.path.join(self.hanco_root, "mediapipe_pixel.json")
+        
+        print("[DEBUG] hanco_root:", self.hanco_root)
+        print("[DEBUG] image_dir exists:", os.path.isdir(self.image_dir), self.image_dir)
+        print("[DEBUG] train_xyz exists:", os.path.isdir(self.train_xyz), self.train_xyz)
+        print("[DEBUG] train_cam exists:", os.path.isdir(self.train_cam), self.train_cam)
+        print("[DEBUG] mp_anno exists:", os.path.isfile(mp_anno), mp_anno)
+    
         with open(mp_anno, "r") as f:
             self.mp_anno = json.load(f)
         f.close()
 
         self.train_dict_list = []
+        
         for scene_num, scene_dict in tqdm(self.mp_anno.items()):
             for cam_id, cam_dict in scene_dict.items():
                 for img_name, img_dict in cam_dict.items():
                     img_id = img_name.split(".")[0]
+                    
                     if os.path.isfile(
                         os.path.join(self.train_cam, scene_num, img_id + ".json")
                     ) and os.path.isfile(os.path.join(self.train_xyz, scene_num, img_id + ".json")):
@@ -472,6 +497,7 @@ class HanCo_ETRI_jitter(Dataset):
                     break
             if len(self.train_dict_list) > limit and limit > 0:
                 break
+            
         del self.mp_anno
 
         self.img_resizer = transforms.Resize([self.img_size, self.img_size])
@@ -482,6 +508,72 @@ class HanCo_ETRI_jitter(Dataset):
                 # transforms.Resize([self.img_size, self.img_size]),
             ]
         )
+
+    @staticmethod
+    def _default_depth_cfg():
+        return dict(
+            # capsule-mesh radii (m) -- coarse hand thickness used when only the
+            # 21 GT joints are available (HanCo has no MANO mesh in this loader).
+            base_radius=0.009, palm_radius=0.014, tip_scale=0.55, ring=6,
+            # sensor noise model (applied in train mode only)
+            sigma=0.005, dropout_p=0.05, quant=0.001, n_holes=2, hole_frac=0.15,
+            # normalisation: metres mapped to 1.0 (hand depth span ~ +/- 10 cm)
+            norm_scale=0.1,
+        )
+
+    def _load_cached_depth(self, image_name, image_hw):
+        """Load a pre-rendered native-res metric depth map (m) for a frame.
+
+        Returns the rendered depth (falls back to None if the cache is missing,
+        so the caller can render on-the-fly instead).
+        """
+        H, W = image_hw
+        fp = os.path.join(self.depth_root, image_name + ".png")
+        depth_mm = cv2.imread(fp, cv2.IMREAD_UNCHANGED)
+        if depth_mm is None:
+            return None
+        if depth_mm.shape[:2] != (H, W):
+            depth_mm = cv2.resize(depth_mm, (W, H), interpolation=cv2.INTER_NEAREST)
+        return depth_mm.astype(np.float32) / 1000.0  # mm -> m
+
+    def _render_depth_channel(self, joints3d, intr, image_hw, img2bb_trans, idx, image_name=None):
+        """Render a normalised depth channel [1, 256, 256] aligned to the RGB crop.
+
+        Depth is rendered (or loaded from the cache) at the original image
+        resolution from the camera-space GT geometry, then warped by the SAME
+        affine (img2bb_trans) the RGB crop uses, so the two channels are
+        pixel-aligned. In-plane crop rotation is a rotation about the optical axis
+        and does not change camera-space z, so the rendered metric depth values
+        stay valid after warping.
+        """
+        dc = self.depth_cfg
+        H, W = image_hw
+        depth_full = None
+        if self.depth_source == "cache" and image_name is not None:
+            depth_full = self._load_cached_depth(image_name, image_hw)
+        if depth_full is None:  # render path (or cache miss)
+            depth_full = render_hand_depth(
+                intr, H, W, joints=joints3d,
+                base_radius=dc["base_radius"], palm_radius=dc["palm_radius"],
+                tip_scale=dc["tip_scale"], ring=dc["ring"],
+            )
+        # INTER_NEAREST keeps hard depth discontinuities and avoids blending bg(0).
+        depth_crop = cv2.warpAffine(
+            depth_full, img2bb_trans, (256, 256), flags=cv2.INTER_NEAREST
+        )
+        if self.mode == "train":
+            depth_crop = add_sensor_noise(
+                depth_crop, sigma=dc["sigma"], dropout_p=dc["dropout_p"],
+                quant=dc["quant"], n_holes=dc["n_holes"], hole_frac=dc["hole_frac"],
+            )
+        else:
+            # deterministic mild corruption for eval (quantisation only)
+            depth_crop = add_sensor_noise(
+                depth_crop, sigma=0.0, dropout_p=0.0, quant=dc["quant"], n_holes=0,
+                rng=np.random.default_rng(int(idx)),
+            )
+        depth_norm = normalize_depth(depth_crop, scale=dc["norm_scale"])
+        return torch.from_numpy(depth_norm).float().unsqueeze(0)  # [1, 256, 256]
 
     def __len__(self):
         return len(self.train_dict_list)
@@ -578,6 +670,14 @@ class HanCo_ETRI_jitter(Dataset):
 
         # cv2.imwrite('img.png', cv2.cvtColor(draw_joint2D(torch.from_numpy(image).permute(2, 0, 1), cam2pixel(rot_joints, new_cam)[:, :2] / 256, idx=None), cv2.COLOR_RGB2BGR))
         # cv2.imwrite('img2.png', cv2.cvtColor(draw_joint2D(torch.from_numpy(image).permute(2, 0, 1), cam2pixel(rot_joints, intr)[:, :2] / 256, idx=None), cv2.COLOR_RGB2BGR))
+
+        if self.with_depth:
+            # Render the depth channel from the camera-space GT joints (joints3d,
+            # original intrinsics) and warp it into the same crop as the RGB.
+            depth_t = self._render_depth_channel(
+                joints3d, intr, image.shape[:2], img2bb_trans, idx, image_name=image_name
+            )
+            return_img = torch.cat([return_img, depth_t], dim=0)  # [4, 256, 256]
 
         return {
             # "image": aug_img,
