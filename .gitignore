@@ -15,8 +15,9 @@ runs/
 logs/
 model_tf/
 
-# claude local config / memory (not project code)
-.claude/
+# claude local config / memory (not project code) — but keep BMAD skill registrations
+.claude/*
+!.claude/skills/
 
 
 
