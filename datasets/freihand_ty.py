@@ -37,13 +37,13 @@ class Freihand(Dataset):
             prefix = "evaluation_{}.json"
             i2l_suffix = "freihand_eval_{}.json"
 
-        self.image_dir = os.path.join(r"../../Datasets/Hand Dataset/FreiHAND/FreiHAND_pub_v2", img_path)
+        self.image_dir = os.path.join(r"../Datasets/Hand Dataset/FreiHAND/FreiHAND_pub_v2", img_path)
         self.image_names = np.sort(os.listdir(self.image_dir))  # 130240
         self.image_size = [img_size, img_size]  # [224, 224] due to ViT
-        self.i2l_annot_path = os.path.join(r"../../Datasets/Hand Dataset/FreiHAND/FreiHAND_pub_v2", "i2l")
+        self.i2l_annot_path = os.path.join(r"../Datasets/Hand Dataset/FreiHAND/FreiHAND_pub_v2", "i2l")
         self.img_size = img_size
 
-        dataset_path = r"../../Datasets/Hand Dataset/FreiHAND/FreiHAND_pub_v2"
+        dataset_path = r"../Datasets/Hand Dataset/FreiHAND/FreiHAND_pub_v2"
         self.verts_path = os.path.join(dataset_path, prefix.format("verts"))
         self.mano_path = os.path.join(dataset_path, prefix.format("mano"))
         self.joint_path = os.path.join(dataset_path, prefix.format("xyz"))

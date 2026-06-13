@@ -13,7 +13,7 @@ import onnx
 import tensorflow as tf
 
 from models.mobrecon_ds import LargeModel_Extra
-from datasets.freihand_ty import Freihand
+#from datasets.freihand_ty import Freihand
 
 from torch.utils.data import DataLoader, random_split
 from torchvision.transforms import ToTensor
@@ -66,6 +66,6 @@ if __name__ == "__main__":
     model.eval()
 
     onnx_save_path = "pretrain/100.onnx"
-    tflite_save_path = "pretrain/100.tflite"
+    tflite_save_path = "pretrain/img256_extra2.tflite"
 
     convert(model, onnx_save_path, tflite_save_path)

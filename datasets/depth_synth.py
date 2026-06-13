@@ -226,6 +226,98 @@ def add_sensor_noise(depth, sigma=0.005, dropout_p=0.05, quant=0.001,
     return out.astype(np.float32)
 
 
+def simulate_lidar_depth(depth, downscale=4, edge_drop_p=0.5, edge_thresh=0.015,
+                         sigma=0.008, dropout_p=0.03, quant=0.005,
+                         n_holes=2, hole_frac=0.15, rng=None):
+    """Corrupt a clean metric depth map to mimic an iPhone LiDAR (ARKit sceneDepth).
+
+    The deploy target is iPhone Pro LiDAR: a direct-ToF sensor that, unlike the
+    high-res stereo depth in the training sets (DexYCB/HO3D), is
+
+      * low native resolution (~256x192) -> coarse / blocky, fine detail lost,
+      * weak/sparse on thin geometry (fingers) and bleeds at depth edges,
+      * dToF per-pixel noise + coarse quantisation.
+
+    A model trained on sharp stereo/synthetic depth would otherwise never see
+    that degradation. Applying this on the 256-crop makes the training depth
+    *look like* LiDAR, bridging the stereo->LiDAR domain gap. Numpy-only (keeps
+    this module dependency-free). 0 = invalid/background throughout.
+
+    Args mirror add_sensor_noise, plus:
+        downscale: block factor for the coarse LiDAR grid (>=1; ~4 over a 256 crop
+            ~ the hand's effective LiDAR sampling).
+        edge_drop_p: probability of zeroing a high-gradient (finger/edge) pixel.
+        edge_thresh: |depth gradient| (m) above which a pixel counts as an edge.
+    """
+    rng = rng if rng is not None else np.random.default_rng()
+    out = depth.astype(np.float32).copy()
+    H, W = out.shape
+    valid0 = out > 0
+    if not valid0.any():
+        return out
+
+    # 1) dToF per-pixel noise + coarse quantisation (valid pixels only)
+    if sigma > 0:
+        out[valid0] += rng.normal(0.0, sigma, int(valid0.sum())).astype(np.float32)
+    if quant and quant > 0:
+        out[valid0] = np.round(out[valid0] / quant) * quant
+
+    # 2) edge / thin-structure dropout (LiDAR misses fingers, bleeds at boundaries)
+    if edge_drop_p > 0:
+        gy = np.abs(np.diff(out, axis=0, prepend=out[:1, :]))
+        gx = np.abs(np.diff(out, axis=1, prepend=out[:, :1]))
+        edge = ((gx + gy) > edge_thresh) & valid0
+        out[edge & (rng.random((H, W)) < edge_drop_p)] = 0.0
+
+    # 3) low-res LiDAR sampling: block-nearest down- then up-sample (no cv2).
+    d = max(1, int(downscale))
+    if d > 1:
+        small = out[::d, ::d]                                  # coarse grid sample
+        up = np.repeat(np.repeat(small, d, axis=0), d, axis=1)[:H, :W]
+        out = np.ascontiguousarray(up, dtype=np.float32)
+
+    # 4) speckle dropout + rectangular low-confidence holes
+    valid = out > 0
+    if dropout_p > 0:
+        out[(rng.random(out.shape) < dropout_p) & valid] = 0.0
+    for _ in range(int(n_holes)):
+        if rng.random() < 0.5:
+            continue
+        hh = int(rng.integers(1, max(2, int(H * hole_frac))))
+        ww = int(rng.integers(1, max(2, int(W * hole_frac))))
+        y0 = int(rng.integers(0, max(1, H - hh)))
+        x0 = int(rng.integers(0, max(1, W - ww)))
+        out[y0:y0 + hh, x0:x0 + ww] = 0.0
+    out[out < 0] = 0.0
+    return out.astype(np.float32)
+
+
+def corrupt_depth(depth, dc, train, rng=None):
+    """Dispatch depth corruption for a dataloader: LiDAR-sim if `dc['lidar_sim']`
+    else the stereo/ToF sensor-noise model. `train` toggles random vs deterministic
+    (eval) corruption. Keeps every loader's call site to one line and backward-
+    compatible (no `lidar_sim` key -> original add_sensor_noise behaviour)."""
+    if dc.get("lidar_sim"):
+        if train:
+            return simulate_lidar_depth(
+                depth, downscale=dc.get("lidar_downscale", 4),
+                edge_drop_p=dc.get("lidar_edge_drop", 0.5),
+                edge_thresh=dc.get("lidar_edge_thresh", 0.015),
+                sigma=dc["sigma"], dropout_p=dc["dropout_p"], quant=dc["quant"],
+                n_holes=dc["n_holes"], hole_frac=dc["hole_frac"], rng=rng)
+        # eval: deterministic LiDAR coarsening (no random noise/edge/holes) so the
+        # held-out metric reflects the LiDAR resolution the model will deploy on.
+        return simulate_lidar_depth(
+            depth, downscale=dc.get("lidar_downscale", 4), edge_drop_p=0.0,
+            sigma=0.0, dropout_p=0.0, quant=dc["quant"], n_holes=0, rng=rng)
+    if train:
+        return add_sensor_noise(depth, sigma=dc["sigma"], dropout_p=dc["dropout_p"],
+                                quant=dc["quant"], n_holes=dc["n_holes"],
+                                hole_frac=dc["hole_frac"], rng=rng)
+    return add_sensor_noise(depth, sigma=0.0, dropout_p=0.0, quant=dc["quant"],
+                            n_holes=0, rng=rng)
+
+
 def normalize_depth(depth, scale=0.1):
     """Centre valid depth on its own median and scale to ~[-1, 1].
 

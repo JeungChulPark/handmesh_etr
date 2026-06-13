@@ -9,6 +9,8 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 
+import onnx
+
 from models.mobrecon_ds import LargeModel_Extra
 from datasets.freihand_ty import Freihand
 
@@ -27,6 +29,22 @@ def cam2pixel_torch(joints, K):
     y = joints[..., 1] / joints[..., 2] * K[:, 1, 1].unsqueeze(1) + K[:, 1, 2].unsqueeze(1)
     return torch.stack((x, y), 2)
 
+def to_onnx(model, onnx_save_path):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+     # convert to .onnx
+    input_image = torch.ones((1, 3, 256, 256)).to(device)
+    
+    torch.onnx.export(
+        model,
+        input_image,
+        onnx_save_path,
+        export_params=True,
+        verbose=False,
+        opset_version=11,
+        input_names=["input0"],
+        output_names=["output0"],
+        dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+    )
 
 def main():
     torch.manual_seed(0)
@@ -45,6 +63,8 @@ def main():
     model.eval()
     model = model.to(device)
 
+    to_onnx(model, "pretrain/200.onnx")
+    
     # dataset
     eval_dataset = Freihand(mode="eval")
     eval_dataloader = DataLoader(eval_dataset, batch_size=32, shuffle=False, num_workers=8, drop_last=False)

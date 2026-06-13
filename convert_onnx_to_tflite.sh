@@ -1,0 +1,1 @@
+onnx2tf -i pretrain/handmesh_etr.onnx -o pretrain/saved_model -osd -coion 

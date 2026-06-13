@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from datasets.augmentation import *
 from datasets.dataset_utils import *
-from datasets.depth_synth import render_hand_depth, add_sensor_noise, normalize_depth
+from datasets.depth_synth import render_hand_depth, add_sensor_noise, normalize_depth, corrupt_depth
 
 # from augmentation import *
 # from dataset_utils import *
@@ -561,17 +561,9 @@ class HanCo_ETRI_jitter(Dataset):
         depth_crop = cv2.warpAffine(
             depth_full, img2bb_trans, (256, 256), flags=cv2.INTER_NEAREST
         )
-        if self.mode == "train":
-            depth_crop = add_sensor_noise(
-                depth_crop, sigma=dc["sigma"], dropout_p=dc["dropout_p"],
-                quant=dc["quant"], n_holes=dc["n_holes"], hole_frac=dc["hole_frac"],
-            )
-        else:
-            # deterministic mild corruption for eval (quantisation only)
-            depth_crop = add_sensor_noise(
-                depth_crop, sigma=0.0, dropout_p=0.0, quant=dc["quant"], n_holes=0,
-                rng=np.random.default_rng(int(idx)),
-            )
+        is_train = self.mode == "train"
+        rng = None if is_train else np.random.default_rng(int(idx))
+        depth_crop = corrupt_depth(depth_crop, dc, train=is_train, rng=rng)
         depth_norm = normalize_depth(depth_crop, scale=dc["norm_scale"])
         return torch.from_numpy(depth_norm).float().unsqueeze(0)  # [1, 256, 256]
 

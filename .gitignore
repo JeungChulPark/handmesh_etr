@@ -10,6 +10,16 @@ result_images/
 result_images_256_cropped/
 tensorboard/
 
+# training artifacts / outputs (do not commit results)
+runs/
+logs/
+model_tf/
+
+# agent / skill tooling (local, not project code)
+.agents/
+.claude/
+_bmad/
+
 
 
 # Created by https://www.toptal.com/developers/gitignore/api/python,visualstudiocode,pycharm
