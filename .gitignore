@@ -15,10 +15,8 @@ runs/
 logs/
 model_tf/
 
-# agent / skill tooling (local, not project code)
-.agents/
+# claude local config / memory (not project code)
 .claude/
-_bmad/
 
 
 
