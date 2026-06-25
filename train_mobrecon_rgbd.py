@@ -208,7 +208,7 @@ def main(args, log_every=500):
     # conv from 3->4 input channels by keeping the RGB filters on channels [0:3]
     # and zero-initialising the new depth channel [3]. The model therefore starts
     # functionally identical to the RGB baseline and learns to exploit depth.
-    if getattr(args, "pretrain", "") and os.path.isfile(args.pretrain):
+    if not getattr(args, "resume", "") and getattr(args, "pretrain", "") and os.path.isfile(args.pretrain):
         ckpt = torch.load(args.pretrain, map_location="cpu")
         src = ckpt.get("model_state_dict", ckpt)
         tgt = model.state_dict()
@@ -226,7 +226,7 @@ def main(args, log_every=500):
         model.load_state_dict(adapted, strict=False)
         print(f"[warm-start] {args.pretrain}: loaded {len(adapted)}/{len(tgt)} tensors "
               f"(stem 3->4 grafted, depth ch zero-init); {len(missing)} reinit", flush=True)
-    elif getattr(args, "pretrain", ""):
+    elif not getattr(args, "resume", "") and getattr(args, "pretrain", ""):
         print(f"[warm-start] WARNING: --pretrain {args.pretrain} not found; training from scratch", flush=True)
 
     model.to(device)
@@ -237,8 +237,40 @@ def main(args, log_every=500):
     )
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100000, gamma=0.9)
 
+    # Resume full training state (model + optimizer + scheduler + epoch + best).
+    # Unlike --pretrain (weights only, fresh optimizer), --resume continues a run
+    # exactly where it stopped, so an interruption costs nothing. Falls back
+    # gracefully on older weight-only checkpoints (warns, keeps a fresh optimizer).
+    start_epoch = 0
     best_test_mpjpe = float("inf")
-    for epoch in tqdm(range(0, args.epoch), leave=True, position=1):
+    if getattr(args, "resume", "") and os.path.isfile(args.resume):
+        ckpt = torch.load(args.resume, map_location="cpu")
+        model.load_state_dict(ckpt["model_state_dict"])
+        start_epoch = int(ckpt.get("epoch", 0))
+        if "optimizer_state_dict" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            print("[resume] optimizer state restored", flush=True)
+        else:
+            print("[resume] WARNING: no optimizer state in checkpoint -> starting "
+                  "with a fresh optimizer (LR schedule restarts)", flush=True)
+        if "scheduler_state_dict" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        # Preserve the best-so-far so a worse epoch can't clobber best.pt. Newer
+        # checkpoints carry it directly; for older ones, read it back from best.pt.
+        if ckpt.get("best_test_mpjpe") is not None:
+            best_test_mpjpe = float(ckpt["best_test_mpjpe"])
+        else:
+            best_path = os.path.join(ckpt_dir, "best.pt")
+            if os.path.isfile(best_path):
+                prev_best = torch.load(best_path, map_location="cpu").get("test_mpjpe")
+                if prev_best is not None:
+                    best_test_mpjpe = float(prev_best)
+        print(f"[resume] {args.resume}: continuing from epoch {start_epoch} "
+              f"(target {args.epoch}); best so far {best_test_mpjpe:.2f}mm", flush=True)
+    elif getattr(args, "resume", ""):
+        print(f"[resume] WARNING: --resume {args.resume} not found; starting fresh", flush=True)
+
+    for epoch in tqdm(range(start_epoch, args.epoch), leave=True, position=1):
         iter = 0
         epoch_loss = 0
         epoch_mpjpe = 0
@@ -300,7 +332,11 @@ def main(args, log_every=500):
 
         if (epoch + 1) % 2 == 0 or (epoch + 1) == args.epoch:
             torch.save(
-                {"epoch": epoch + 1, "model_state_dict": model.state_dict()},
+                {"epoch": epoch + 1,
+                 "model_state_dict": model.state_dict(),
+                 "optimizer_state_dict": optimizer.state_dict(),
+                 "scheduler_state_dict": scheduler.state_dict(),
+                 "best_test_mpjpe": best_test_mpjpe},
                 os.path.join(ckpt_dir, f"{epoch+1}.pt"),
             )
 
@@ -327,7 +363,10 @@ def main(args, log_every=500):
         if test_mpjpe < best_test_mpjpe:
             best_test_mpjpe = test_mpjpe
             torch.save({"epoch": epoch + 1, "model_state_dict": model.state_dict(),
-                        "test_mpjpe": test_mpjpe}, os.path.join(ckpt_dir, "best.pt"))
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
+                        "test_mpjpe": test_mpjpe, "best_test_mpjpe": best_test_mpjpe},
+                       os.path.join(ckpt_dir, "best.pt"))
             print(f"[epoch {epoch+1:3d}] new best -> saved best.pt ({test_mpjpe:.2f}mm)", flush=True)
 
         writer.add_scalar("mpjpe/test_epoch", test_mpjpe, steps)
@@ -383,6 +422,13 @@ if __name__ == "__main__":
                              "all weights are loaded; the 3->4 channel stem conv keeps the "
                              "RGB filters and the depth channel is zero-initialised so the "
                              "model starts at the RGB baseline and only improves.")
+    parser.add_argument("--resume", default="", type=str,
+                        help="resume a previous run from a checkpoint: restores model + "
+                             "optimizer + scheduler + epoch + best so training continues "
+                             "exactly where it stopped. Takes precedence over --pretrain. "
+                             "--epoch is the TOTAL target epoch (e.g. resume epoch-28 ckpt "
+                             "with --epoch 50 to run the remaining 22). Old weight-only "
+                             "checkpoints work too (fresh optimizer, with a warning).")
     args = parser.parse_args()
 
     cfg = load_cfg(args.cfg)
