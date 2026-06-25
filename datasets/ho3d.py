@@ -81,7 +81,7 @@ def decode_ho3d_depth(depth_path):
 class HO3D_RGBD(Dataset):
     def __init__(self, root, mode="train", split="train", img_size=256,
                  with_depth=True, depth_mode="hand_masked", depth_cfg=None,
-                 hand_band_m=0.06, sequences=None, limit=0):
+                 hand_band_m=0.06, sequences=None, limit=0, return_abs_depth=False):
         """
         Args:
             root: HO3D dataset root (contains train/, evaluation/).
@@ -101,6 +101,10 @@ class HO3D_RGBD(Dataset):
         self.with_depth = with_depth
         self.depth_mode = depth_mode
         self.hand_band_m = hand_band_m
+        # return_abs_depth: additive opt-in -> also emit "depth_med" (raw-depth
+        # median = absolute distance) for the dual-stream TranslationHead. Default
+        # off keeps the dict identical to the early-fusion baseline.
+        self.return_abs_depth = return_abs_depth
         self.depth_cfg = {**self._default_depth_cfg(), **(depth_cfg or {})}
 
         self.samples = self._build_index(sequences, limit)
@@ -156,8 +160,10 @@ class HO3D_RGBD(Dataset):
         is_train = self.mode == "train"
         rng = None if is_train else np.random.default_rng(int(idx))
         depth_crop = corrupt_depth(depth_crop, dc, train=is_train, rng=rng)
+        valid = depth_crop > 0
+        depth_med = float(np.median(depth_crop[valid])) if valid.any() else 0.0
         depth_norm = normalize_depth(depth_crop, scale=dc["norm_scale"])
-        return torch.from_numpy(depth_norm).float().unsqueeze(0)
+        return torch.from_numpy(depth_norm).float().unsqueeze(0), depth_med
 
     # --------------------------------------------------------------- getitem
     def __getitem__(self, idx):
@@ -220,19 +226,23 @@ class HO3D_RGBD(Dataset):
 
         return_img = torch.from_numpy(
             np.ascontiguousarray(aug_img.astype(np.uint8))).permute(2, 0, 1).float() / 255.0
+        depth_med = 0.0
         if self.with_depth:
-            depth_t = self._depth_channel(depth_full_m, joints3d, img2bb_trans, idx)
+            depth_t, depth_med = self._depth_channel(depth_full_m, joints3d, img2bb_trans, idx)
             return_img = torch.cat([return_img, depth_t], dim=0)
 
         new_cam = cam_nh.copy()
         new_cam[:, 2] = cam[:, 2]
-        return {
+        out = {
             "image": return_img,
             "keypoints3D": align_joints,
             "keypoints2D": kps,
             "root": root_xyz,
             "cam": new_cam,
         }
+        if getattr(self, "return_abs_depth", False):
+            out["depth_med"] = np.float32(depth_med)
+        return out
 
 
 class H2O3D_RGBD(HO3D_RGBD):

@@ -430,7 +430,8 @@ def random_translate_pose(joint_uvd, weight=1.0):
 
 class HanCo_ETRI_jitter(Dataset):
     def __init__(self, config=None, mode="train", img_size=256, limit=2e3,
-                 with_depth=False, depth_cfg=None, depth_source="render", depth_root=None):
+                 with_depth=False, depth_cfg=None, depth_source="render", depth_root=None,
+                 return_abs_depth=False):
         # with_depth: if True, __getitem__ returns a 4-channel [R,G,B,D] image,
         #   where D is a synthetic metric-depth channel rendered from the GT hand
         #   geometry (see datasets/depth_synth.py) and corrupted by a sensor noise
@@ -441,6 +442,12 @@ class HanCo_ETRI_jitter(Dataset):
         #   datasets/gen_hanco_depth.py (much faster, identical geometry).
         # depth_root: cache directory (default <hanco_root>/depth).
         self.with_depth = with_depth
+        # return_abs_depth: additive opt-in for the dual-stream model. When True,
+        #   __getitem__ also returns "depth_med" (the raw-depth median over the
+        #   hand region, in metres = absolute camera distance), which the depth
+        #   channel itself discards via per-frame median centring. Default False
+        #   leaves the returned dict byte-identical to the early-fusion baseline.
+        self.return_abs_depth = return_abs_depth
         self.depth_cfg = {**self._default_depth_cfg(), **(depth_cfg or {})}
         self.depth_source = depth_source
         # self.hanco_root -> hanco root
@@ -564,8 +571,12 @@ class HanCo_ETRI_jitter(Dataset):
         is_train = self.mode == "train"
         rng = None if is_train else np.random.default_rng(int(idx))
         depth_crop = corrupt_depth(depth_crop, dc, train=is_train, rng=rng)
+        # Raw-depth median (absolute camera distance, metres) BEFORE centring —
+        # the only absolute-z signal, consumed by the dual-stream TranslationHead.
+        valid = depth_crop > 0
+        depth_med = float(np.median(depth_crop[valid])) if valid.any() else 0.0
         depth_norm = normalize_depth(depth_crop, scale=dc["norm_scale"])
-        return torch.from_numpy(depth_norm).float().unsqueeze(0)  # [1, 256, 256]
+        return torch.from_numpy(depth_norm).float().unsqueeze(0), depth_med  # [1,256,256], scalar
 
     def __len__(self):
         return len(self.train_dict_list)
@@ -663,15 +674,16 @@ class HanCo_ETRI_jitter(Dataset):
         # cv2.imwrite('img.png', cv2.cvtColor(draw_joint2D(torch.from_numpy(image).permute(2, 0, 1), cam2pixel(rot_joints, new_cam)[:, :2] / 256, idx=None), cv2.COLOR_RGB2BGR))
         # cv2.imwrite('img2.png', cv2.cvtColor(draw_joint2D(torch.from_numpy(image).permute(2, 0, 1), cam2pixel(rot_joints, intr)[:, :2] / 256, idx=None), cv2.COLOR_RGB2BGR))
 
+        depth_med = 0.0
         if self.with_depth:
             # Render the depth channel from the camera-space GT joints (joints3d,
             # original intrinsics) and warp it into the same crop as the RGB.
-            depth_t = self._render_depth_channel(
+            depth_t, depth_med = self._render_depth_channel(
                 joints3d, intr, image.shape[:2], img2bb_trans, idx, image_name=image_name
             )
             return_img = torch.cat([return_img, depth_t], dim=0)  # [4, 256, 256]
 
-        return {
+        out = {
             # "image": aug_img,
             "image": return_img,
             "keypoints3D": align_joints,
@@ -682,6 +694,9 @@ class HanCo_ETRI_jitter(Dataset):
             "root": root_xyz,
             "cam": new_cam,
         }
+        if self.return_abs_depth:
+            out["depth_med"] = np.float32(depth_med)
+        return out
 
 
 # python .\datasets\freihand.py --cfg .\configs.yaml

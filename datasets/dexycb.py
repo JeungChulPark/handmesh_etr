@@ -98,7 +98,8 @@ def get_2D_annotation(xyz, K):
 class DexYCB_RGBD(Dataset):
     def __init__(self, root, mode="train", img_size=256,
                  with_depth=True, depth_mode="hand_masked", depth_cfg=None,
-                 hands="right", flip_left=False, subjects=None, limit=0):
+                 hands="right", flip_left=False, subjects=None, limit=0,
+                 return_abs_depth=False):
         """
         Args:
             root: DexYCB dataset root ($DEX_YCB_DIR).
@@ -123,6 +124,10 @@ class DexYCB_RGBD(Dataset):
         self.with_depth = with_depth
         self.depth_mode = depth_mode
         self.flip_left = flip_left
+        # return_abs_depth: additive opt-in for the dual-stream model -> also emit
+        # "depth_med" (raw-depth median, metres = absolute distance). Default off
+        # keeps the dict identical to the early-fusion baseline.
+        self.return_abs_depth = return_abs_depth
         self.depth_cfg = {**self._default_depth_cfg(), **(depth_cfg or {})}
 
         self._intr_cache = {}
@@ -204,8 +209,10 @@ class DexYCB_RGBD(Dataset):
         is_train = self.mode == "train"
         rng = None if is_train else np.random.default_rng(int(idx))
         depth_crop = corrupt_depth(depth_crop, dc, train=is_train, rng=rng)
+        valid = depth_crop > 0
+        depth_med = float(np.median(depth_crop[valid])) if valid.any() else 0.0
         depth_norm = normalize_depth(depth_crop, scale=dc["norm_scale"])
-        return torch.from_numpy(depth_norm).float().unsqueeze(0)
+        return torch.from_numpy(depth_norm).float().unsqueeze(0), depth_med
 
     @staticmethod
     def _to_metres(joint_3d):
@@ -278,19 +285,23 @@ class DexYCB_RGBD(Dataset):
 
         return_img = torch.from_numpy(
             np.ascontiguousarray(aug_img.astype(np.uint8))).permute(2, 0, 1).float() / 255.0
+        depth_med = 0.0
         if self.with_depth:
-            depth_t = self._depth_channel(depth_full_m, seg, img2bb_trans, idx)
+            depth_t, depth_med = self._depth_channel(depth_full_m, seg, img2bb_trans, idx)
             return_img = torch.cat([return_img, depth_t], dim=0)  # [4,256,256]
 
         new_cam = cam_nh.copy()
         new_cam[:, 2] = cam[:, 2]
-        return {
+        out = {
             "image": return_img,
             "keypoints3D": align_joints,
             "keypoints2D": kps,
             "root": root_xyz,
             "cam": new_cam,
         }
+        if self.return_abs_depth:
+            out["depth_med"] = np.float32(depth_med)
+        return out
 
 
 # python -m datasets.dexycb --root /path/DexYCB --check 8
