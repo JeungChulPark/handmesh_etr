@@ -53,6 +53,7 @@ from datasets.ho3d import HO3D_RGBD, H2O3D_RGBD
 from datasets.tof_depth import (MSRA_RGBD, ICVL_RGBD, NYU_RGBD,
                                  BigHand_RGBD, HANDS17_RGBD, FPHA_RGBD)
 from datasets.oakink_contactpose import ContactPose_RGBD, OakInk_RGBD
+from datasets.iphone_captures import IPhoneCaptures_RGBD
 from utils import *
 
 
@@ -139,6 +140,11 @@ def build_dataset(args, depth_cfg):
         elif n == "oakink":
             # NOTE: oikit exposes no sensor depth -> OakInk depth is RENDERED (synthetic)
             ds = OakInk_RGBD(data_split="train", mode="train", with_depth=True)
+        elif n == "iphone":
+            # Real iPhone LiDAR captures with pseudo-3D GT (make_iphone_gt.py).
+            # depth_cfg shared so its depth channel matches the other real-depth sets.
+            ds = IPhoneCaptures_RGBD(root=args.iphone_root, mode="train",
+                                     with_depth=True, depth_cfg=depth_cfg)
         else:
             raise ValueError(f"unknown dataset '{n}' in --datasets")
         parts.append(WithJointValid(ds))
@@ -416,6 +422,7 @@ if __name__ == "__main__":
     parser.add_argument("--bighand_root", default="", help="BigHand2.2M root (Training_Annotation.txt)")
     parser.add_argument("--hands17_root", default="", help="HANDS17 root (training/)")
     parser.add_argument("--fpha_root", default="", help="FPHA root (Video_files/ + Hand_pose_annotation_v1_1/)")
+    parser.add_argument("--iphone_root", default="rgbd_captures", help="iPhone captures dir (cap_*_gt.json from make_iphone_gt.py)")
     parser.add_argument("--contactpose_dir", default="", help="ContactPose data dir (needs the toolkit on PYTHONPATH)")
     parser.add_argument("--pretrain", default="", type=str,
                         help="RGB checkpoint (e.g. pretrain/100.pt) to warm-start from: "

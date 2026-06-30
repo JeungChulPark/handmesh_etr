@@ -329,3 +329,6 @@ pyrightconfig.json
 .ionide
 
 # End of https://www.toptal.com/developers/gitignore/api/python,visualstudiocode,pycharm
+# iPhone/ZED RGB-D capture sessions + generated GT/pred artifacts (large binary)
+rgbd_captures/
+rgbd_captures_*/
