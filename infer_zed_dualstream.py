@@ -1,4 +1,4 @@
-"""Live ZED inference for the DUAL-STREAM RGB-D hand model (ds_lidarsim etc.).
+"""Live ZED inference for the DUAL-STREAM RGB-D hand model (ds_anchor_gate etc.).
 
 Unlike infer_rgbd_zed.py (early-fusion model + heuristic root recovery), the
 dual-stream model predicts the ABSOLUTE joints itself: its TranslationHead
@@ -7,17 +7,28 @@ backprojection at inference. The one extra input it needs is `depth_med` -- the
 median of the RAW sensor depth over the hand crop (metres) -- exactly the
 absolute-distance signal it was trained on.
 
+Geometric-anchor checkpoints (geo_anchor=True, e.g. ds_anchor_gate) additionally
+take a depth-only `root_anchor` (back-projected hand-depth centroid, metres) and
+its `anchor_valid` confidence; the head predicts a residual on top of the anchor
+and falls back to an RGB prior when confidence is low. We compute these LIVE from
+the sensor depth + crop intrinsics via `geometric_root_anchor` (deploy-safe, no
+ground truth). geo_anchor is auto-detected from the checkpoint, so legacy
+dual-stream models (ds_lidarsim) still load and run with the anchor disabled.
+
 Pipeline (per frame):
   ZED -> bgr + depth_m(metres,0=invalid) + K
-  MediaPipe bbox -> augmentation(test) -> img2bb_trans
+  MediaPipe bbox -> augmentation(test) -> img2bb_trans, crop_cam
   RGB  warpAffine(LINEAR)/255 -> [3,256,256]
   depth warpAffine(NEAREST)   -> depth_crop(m) -> median => depth_med
                               -> normalize_depth -> [1,256,256]
-  model([1,4,256,256], depth_med[1,1]) -> keypoints_abs (21,3) camera-frame metres
+                              -> geometric_root_anchor(depth_crop, crop_cam)
+                                   => root_anchor[3], anchor_valid (geo_anchor only)
+  model([1,4,256,256], depth_med, root_anchor, anchor_valid)
+       -> keypoints_abs (21,3) camera-frame metres
   project(K) -> draw
 
 Run:
-  python infer_zed_dualstream.py --ckpt mobrecon_ckpt/ds_lidarsim/best.pt --source zed
+  python infer_zed_dualstream.py --ckpt mobrecon_ckpt/ds_anchor_gate/best.pt --source zed
   python infer_zed_dualstream.py --ckpt ... --source svo --svo rec.svo2 --no-gui --save out/
 """
 
@@ -30,8 +41,17 @@ import cv2
 import torch
 
 from datasets.dataset_utils import augmentation
-from datasets.depth_synth import normalize_depth
+from datasets.depth_synth import normalize_depth, geometric_root_anchor
 from models.mobrecon_dualstream import MobRecon_DualStream
+
+
+def detect_geo_anchor(state, latent_size=1024, depth_dim=128):
+    """Infer whether a checkpoint uses the geometric-anchor head from the head's
+    input width: legacy = pose+depth+2, anchor = pose+depth+6 (matches eval)."""
+    w = state.get("translation_head.mlp.0.weight")
+    if w is None:
+        return True
+    return int(w.shape[1]) == latent_size + depth_dim + 6
 
 # Reuse capture sources + detector + drawing from the existing ZED/Femto pipeline.
 from infer_rgbd_zed import ZEDSource, build_source
@@ -51,21 +71,28 @@ class DualStreamHandPose:
         c = torch.load(ckpt, map_location="cpu")
         sd = c.get("model_state_dict", c)
         pose_in_chans = int(sd["rgb_backbone.pre_layer.0.0.weight"].shape[1])
-        self.model = MobRecon_DualStream(cfg=None, pose_in_chans=pose_in_chans)
+        self.geo_anchor = detect_geo_anchor(sd)
+        self.model = MobRecon_DualStream(cfg=None, pose_in_chans=pose_in_chans,
+                                         geo_anchor=self.geo_anchor)
         self.model.load_state_dict(sd, strict=True)
         self.model.to(self.device).eval()
         print(f"[dualstream] {ckpt} (pose_in_chans={pose_in_chans}, "
-              f"epoch={c.get('epoch','?')}) device={self.device} rgb_only={rgb_only}")
+              f"geo_anchor={self.geo_anchor}, epoch={c.get('epoch','?')}) "
+              f"device={self.device} rgb_only={rgb_only}")
 
     def preprocess(self, bgr, depth_m, bbox, K):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        aug_img, img2bb_trans, _, _, _, _, _, _ = augmentation(
+        # crop_cam = intrinsics in the 256-crop frame (trans @ K); needed to
+        # back-project the depth anchor, exactly as the dataset loaders do.
+        aug_img, img2bb_trans, _, _, _, crop_cam, _, _ = augmentation(
             rgb.astype(np.float32), bbox, "test", exclude_flip=True,
             rotation=True, cam_param=K)
         rgb_crop = np.clip(aug_img, 0, 255).astype(np.uint8)
         rgb_t = torch.from_numpy(rgb_crop).float().permute(2, 0, 1) / 255.0
 
         depth_med = 0.0
+        root_anchor = np.zeros(3, np.float32)
+        anchor_valid = np.float32(0.0)
         if self.rgb_only:
             depth_norm = np.zeros((256, 256), np.float32)
         else:
@@ -76,15 +103,24 @@ class DualStreamHandPose:
             # (raw-depth median over the hand crop, exactly as in training).
             depth_med = float(np.median(depth_crop[valid])) if valid.any() else 0.0
             depth_norm = normalize_depth(depth_crop, scale=self.norm_scale)
+            # Depth-only geometric root anchor + confidence (geo_anchor models).
+            if self.geo_anchor:
+                root_anchor, anchor_valid = geometric_root_anchor(depth_crop, crop_cam)
         depth_t = torch.from_numpy(depth_norm).float().unsqueeze(0)
 
         inp = torch.cat([rgb_t, depth_t], dim=0).unsqueeze(0)  # [1,4,256,256]
-        return inp.to(self.device), rgb_crop, depth_norm, depth_med
+        return inp.to(self.device), rgb_crop, depth_norm, depth_med, root_anchor, anchor_valid
 
     @torch.no_grad()
-    def infer(self, inp, depth_med):
+    def infer(self, inp, depth_med, root_anchor=None, anchor_valid=None):
         med = torch.tensor([[depth_med]], dtype=torch.float32, device=self.device)
-        out = self.model(inp, med)
+        ra = va = None
+        if self.geo_anchor and root_anchor is not None:
+            ra = torch.tensor(root_anchor, dtype=torch.float32,
+                              device=self.device).reshape(1, 3)
+            va = torch.tensor([[float(anchor_valid)]], dtype=torch.float32,
+                              device=self.device)
+        out = self.model(inp, med, ra, va)
         rel = out["keypoints"][0].cpu().numpy()        # (21,3) root-relative metres
         abs_j = out["keypoints_abs"][0].cpu().numpy()  # (21,3) camera-frame metres (learned root)
         root = out["root"][0].cpu().numpy()
@@ -94,7 +130,7 @@ class DualStreamHandPose:
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--ckpt", default="mobrecon_ckpt/ds_lidarsim/best.pt")
+    ap.add_argument("--ckpt", default="mobrecon_ckpt/ds_anchor_gate/best.pt")
     ap.add_argument("--source", default="zed",
                     choices=["zed", "svo", "folder", "webcam"])
     ap.add_argument("--svo", default=None)
@@ -138,8 +174,9 @@ def main():
             pts = detector.detect(bgr)
             if pts is not None:
                 bbox = landmarks_to_bbox(pts, bgr.shape[:2], margin_frac=args.margin)
-                inp, rgb_crop, dn, depth_med = est.preprocess(bgr, depth_m, bbox, K)
-                abs_j, root, rel = est.infer(inp, depth_med)
+                inp, rgb_crop, dn, depth_med, root_anchor, anchor_valid = est.preprocess(
+                    bgr, depth_m, bbox, K)
+                abs_j, root, rel = est.infer(inp, depth_med, root_anchor, anchor_valid)
                 mode = "learned-root"
                 if args.geom_root:
                     # Hybrid: dual-stream pose + sensor-agnostic geometric root.

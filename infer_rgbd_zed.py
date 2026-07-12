@@ -36,6 +36,7 @@ Examples
 """
 
 import os
+import json
 import time
 import argparse
 
@@ -188,8 +189,12 @@ def main():
 
     src = build_source(args)
     detector = HandDetector(model_path=args.hand_model)
+    metrics_f = None
     if args.save:
         os.makedirs(args.save, exist_ok=True)
+        # per-frame model uv + MediaPipe landmarks -> same Procrustes pose metric as
+        # the iPhone captures (diag_pose_vs_root), for an apples-to-apples ZED number.
+        metrics_f = open(os.path.join(args.save, "metrics.jsonl"), "w")
 
     t_prev, fps, frame_i = time.time(), 0.0, 0
     try:
@@ -211,6 +216,12 @@ def main():
                     uv = project(abs_j, K)
                     overlay = draw_skeleton(bgr, uv, bbox)
                     z = abs_j[0, 2]
+                    if metrics_f is not None:
+                        metrics_f.write(json.dumps({
+                            "frame": frame_i,
+                            "uv": [[round(float(a), 1) for a in p] for p in uv],
+                            "mp": [[round(float(a), 1) for a in p[:2]] for p in pts],
+                            "root_z_m": round(float(z), 4)}) + "\n")
                     cv2.putText(overlay, f"wrist z={z*100:5.1f} cm  depth-cov="
                                 f"{(dn != 0).mean()*100:4.1f}%", (10, 60),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
@@ -240,6 +251,8 @@ def main():
     finally:
         src.close()
         detector.close()
+        if metrics_f is not None:
+            metrics_f.close()
         if args.gui:
             cv2.destroyAllWindows()
     print(f"[main] processed {frame_i} frames")
