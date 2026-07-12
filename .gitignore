@@ -332,3 +332,18 @@ pyrightconfig.json
 # iPhone/ZED RGB-D capture sessions + generated GT/pred artifacts (large binary)
 rgbd_captures/
 rgbd_captures_*/
+
+# generated artifacts / caches / large data (do not commit)
+FineTuning/
+cache/
+zed_ef_out*/
+iphone_check/
+msra_check/
+*.mp4
+*_screenshot_*.png
+
+# Unity generated files
+unity/DepthRefinement/Library/
+unity/DepthRefinement/UserSettings/
+unity/DepthRefinement/Assets/Temp/
+unity/DepthRefinement/Assets/Temp.meta
