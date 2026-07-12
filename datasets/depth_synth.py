@@ -318,6 +318,61 @@ def corrupt_depth(depth, dc, train, rng=None):
                             n_holes=0, rng=rng)
 
 
+def geometric_root_anchor(depth_crop, cam, win=8, min_valid=50, mad_ref=0.02):
+    """Depth-only absolute-root anchor + a confidence in [0,1], crop camera frame.
+
+    Back-projects the hand-depth centroid pixel at a robust *local* median depth
+    to a 3-D point that anchors the global root. The diagnostic
+    (`diag_dexycb_med.py`) showed this near-wrist depth tracks the GT wrist z at
+    r=0.99 on ~95% of frames (a clean ~-20mm hand-half-thickness offset the
+    TranslationHead's residual learns); the bad ~5-10% are occlusion frames where
+    the centroid window straddles the grasped object / background, so its depth is
+    multi-modal and z0 is wrong.
+
+    Confidence detects exactly that, WITHOUT ground truth (so the gate transfers to
+    deployment): a clean palm window is a single locally-planar surface (small
+    depth MAD, few holes) -> conf~1; an occlusion/edge window is dispersed or
+    holey -> conf~0. The model gates `root = anchor*conf + residual`, so a low-conf
+    anchor is ignored and the head falls back to an RGB-conditioned prior.
+
+    Deploy-consistent: uses ONLY the depth map + intrinsics, no ground truth.
+
+    Args:
+        depth_crop : [H,W] metric depth in the 256-crop (0 = invalid/background).
+        cam        : [3,3] crop intrinsics (same matrix used for `keypoints2D`).
+        win        : half-size of the centroid window for the robust depth median.
+        min_valid  : require at least this many valid hand-depth pixels.
+        mad_ref    : depth MAD (m) at which window coherence confidence ~= 1/e.
+
+    Returns:
+        anchor [3] float32 (x,y,z metres), conf float32 in [0,1] (0 = unusable ->
+        zeros anchor, head uses the RGB prior).
+    """
+    valid = depth_crop > 0
+    if int(valid.sum()) < min_valid:
+        return np.zeros(3, np.float32), np.float32(0.0)
+    ys, xs = np.nonzero(valid)
+    uc, vc = float(xs.mean()), float(ys.mean())          # hand-depth centroid px
+    iu, iv = int(round(uc)), int(round(vc))
+    w = depth_crop[max(0, iv - win):iv + win + 1, max(0, iu - win):iu + win + 1]
+    wv = w[w > 0]
+    if wv.size >= 5:
+        z0 = float(np.median(wv))
+        mad = float(np.median(np.abs(wv - z0)))          # robust local dispersion
+        valid_frac = float(wv.size) / float(w.size)      # holes in the window
+        conf = valid_frac * float(np.exp(-(mad / mad_ref) ** 2))
+    else:
+        # too few window pixels: fall back to the whole-hand median, low confidence
+        z0 = float(np.median(depth_crop[valid]))
+        conf = 0.1
+    conf = float(np.clip(conf, 0.0, 1.0))
+    fx, fy = float(cam[0, 0]), float(cam[1, 1])
+    cx, cy = float(cam[0, 2]), float(cam[1, 2])
+    x0 = (uc - cx) / fx * z0
+    y0 = (vc - cy) / fy * z0
+    return np.array([x0, y0, z0], np.float32), np.float32(conf)
+
+
 def normalize_depth(depth, scale=0.1):
     """Centre valid depth on its own median and scale to ~[-1, 1].
 

@@ -127,9 +127,14 @@ def main():
     ap.add_argument("--hand_model", default=None)
     args = ap.parse_args()
 
-    stems = sorted(s[:-len("_rgb.png")] for s in glob.glob(os.path.join(args.dir, "cap_*_rgb.png")))
+    # Sessions saved by different recorder versions use .png OR .jpg for the RGB
+    # frame; discover both (load_capture reads the actual filename from the meta).
+    rgb_files = (glob.glob(os.path.join(args.dir, "cap_*_rgb.png"))
+                 + glob.glob(os.path.join(args.dir, "cap_*_rgb.jpg")))
+    stems = sorted({os.path.join(args.dir, os.path.basename(f).rsplit("_rgb.", 1)[0])
+                    for f in rgb_files})
     if not stems:
-        print(f"[make_gt] no cap_*_rgb.png under {args.dir}"); return
+        print(f"[make_gt] no cap_*_rgb.{{png,jpg}} under {args.dir}"); return
     det = HandDetector(model_path=args.hand_model)
 
     k = args.rotate if args.rotate is not None else vote_rotation(stems, det)

@@ -41,7 +41,7 @@ import argparse
 import torch
 import torch.nn as nn
 from tqdm import tqdm
-from torch.utils.data import DataLoader, random_split, ConcatDataset, Dataset
+from torch.utils.data import DataLoader, random_split, ConcatDataset, Dataset, Subset
 from torch.utils.tensorboard import SummaryWriter
 
 import numpy as np
@@ -86,6 +86,62 @@ class WithJointValid(Dataset):
         return d
 
 
+def render_heatmaps(kps2d, size=256, sigma=6.0):
+    """kps2d [21,2] in [0,1] crop coords -> [21,size,size] float32 Gaussians in [0,1].
+
+    Separable + windowed (only a +-3 sigma box per joint) so rendering 21 maps per
+    sample stays cheap. Joints outside the crop render as empty maps."""
+    K = kps2d.shape[0]
+    hm = np.zeros((K, size, size), np.float32)
+    r = int(3 * sigma)
+    two_s2 = 2.0 * sigma * sigma
+    for j in range(K):
+        u = float(kps2d[j, 0]) * size
+        v = float(kps2d[j, 1]) * size
+        x0, x1 = max(0, int(u - r)), min(size, int(u + r + 1))
+        y0, y1 = max(0, int(v - r)), min(size, int(v + r + 1))
+        if x0 >= x1 or y0 >= y1:
+            continue
+        xs = np.arange(x0, x1, dtype=np.float32)
+        ys = np.arange(y0, y1, dtype=np.float32)
+        gx = np.exp(-((xs - u) ** 2) / two_s2)
+        gy = np.exp(-((ys - v) ** 2) / two_s2)
+        hm[j, y0:y1, x0:x1] = np.outer(gy, gx)
+    return hm
+
+
+class WithHeatmap(Dataset):
+    """Append 21 MediaPipe-style 2D heatmap channels to the image tensor.
+
+    Renders Gaussians at the sample's `keypoints2D`. In train mode the 2D points are
+    jittered (sim. MediaPipe localisation error) and some joints are dropped (sim.
+    MediaPipe missing a joint) so the model learns to use a NOISY 2D prior -- the
+    same distribution it sees at deploy when real MediaPipe drives the channels.
+    Wrap OUTSIDE WithJointValid so `image` is already the [4,H,W] RGB-D tensor."""
+
+    def __init__(self, ds, sigma=6.0, jitter_px=5.0, drop_p=0.05, train=True, size=256):
+        self.ds = ds
+        self.sigma, self.jitter_px, self.drop_p = sigma, jitter_px, drop_p
+        self.train, self.size = train, size
+
+    def __len__(self):
+        return len(self.ds)
+
+    def __getitem__(self, i):
+        d = self.ds[i]
+        kps = np.asarray(d["keypoints2D"], np.float32).copy()      # [21,2] in [0,1]
+        if self.train and self.jitter_px > 0:
+            kps += np.random.randn(*kps.shape).astype(np.float32) * (self.jitter_px / self.size)
+        hm = render_heatmaps(kps, self.size, self.sigma)           # [21,H,W]
+        if self.train and self.drop_p > 0:
+            for j in range(hm.shape[0]):
+                if np.random.rand() < self.drop_p:
+                    hm[j] = 0.0
+        img = torch.as_tensor(d["image"]).float()                  # [4,H,W]
+        d["image"] = torch.cat([img, torch.from_numpy(hm)], dim=0)  # [4+21,H,W]
+        return d
+
+
 def masked_l2(pred, gt, valid, dim):
     """MSE over supervised joints only. With `valid` all-ones this is exactly
     nn.MSELoss() (same numerator, same B*21*dim denominator), so a HanCo-only run
@@ -109,6 +165,9 @@ def build_dataset(args, depth_cfg):
     sensor depth; hanco renders/loads the synthetic depth as before.
     """
     names = [n.strip() for n in args.datasets.split(",") if n.strip()]
+    src_limit = int(getattr(args, "source_limit", 0) or 0)
+    iph_repeat = max(1, int(getattr(args, "iphone_repeat", 1) or 1))
+    iph_split = getattr(args, "iphone_split", "all")
     parts = []
     for n in names:
         if n == "hanco":
@@ -144,11 +203,31 @@ def build_dataset(args, depth_cfg):
             # Real iPhone LiDAR captures with pseudo-3D GT (make_iphone_gt.py).
             # depth_cfg shared so its depth channel matches the other real-depth sets.
             ds = IPhoneCaptures_RGBD(root=args.iphone_root, mode="train",
-                                     with_depth=True, depth_cfg=depth_cfg)
+                                     with_depth=True, depth_cfg=depth_cfg,
+                                     split=iph_split)
         else:
             raise ValueError(f"unknown dataset '{n}' in --datasets")
-        parts.append(WithJointValid(ds))
-        print(f"[build_dataset] + {n}: {len(ds)} frames", flush=True)
+        part = WithJointValid(ds)
+        # Cap large source sets to a fixed first-N subsample so a small target set
+        # (iphone) isn't drowned in a naive concat (the joint-training question).
+        if n != "iphone" and src_limit and len(part) > src_limit:
+            # Strided (not first-N) subsample: DexYCB/HO3D are ordered by
+            # subject/sequence, so range(N) would grab one subject. A stride keeps
+            # the source slice diverse across subjects/objects/views.
+            step = len(part) / float(src_limit)
+            idx = [int(i * step) for i in range(src_limit)]
+            part = Subset(part, idx)
+            print(f"[build_dataset] + {n}: {len(ds)} frames -> strided {src_limit}", flush=True)
+        elif n == "iphone" and iph_repeat > 1:
+            # Oversample the target domain by replicating it iph_repeat times so it
+            # occupies a meaningful batch fraction alongside the big source sets.
+            parts.extend([part] * iph_repeat)
+            print(f"[build_dataset] + {n}: {len(ds)} frames x{iph_repeat} "
+                  f"= {len(ds) * iph_repeat}", flush=True)
+            continue
+        else:
+            print(f"[build_dataset] + {n}: {len(part)} frames", flush=True)
+        parts.append(part)
     return parts[0] if len(parts) == 1 else ConcatDataset(parts)
 
 
@@ -190,16 +269,51 @@ def main(args, log_every=500):
               "-> training depth coarsened to mimic iPhone LiDAR", flush=True)
     with_depth = True  # always produce 4 channels; --rgb_only zeroes the depth
     in_chans = 4
+    n_hm = 21
+    if getattr(args, "mp_heatmap", False):
+        in_chans = 4 + n_hm  # RGB(3) + depth(1) + 21 MediaPipe 2D heatmaps
+        print(f"[mp_heatmap] 2D-keypoint heatmap channels ON -> in_chans={in_chans} "
+              f"(sigma={args.hm_sigma}, jitter={args.hm_jitter}px, drop={args.hm_drop})",
+              flush=True)
 
     train_dataset = build_dataset(args, depth_cfg)
+    if getattr(args, "mp_heatmap", False):
+        train_dataset = WithHeatmap(train_dataset, sigma=args.hm_sigma,
+                                    jitter_px=args.hm_jitter, drop_p=args.hm_drop, train=True)
 
-    len_dataset = int(len(train_dataset) * 0.95)
-    left_len = len(train_dataset) - len_dataset
-    train_dataset, test_dataset = random_split(train_dataset, [len_dataset, left_len])
-    test_dataset.mode = "test"
+    if getattr(args, "fixed_eval_iphone", False):
+        # Score + select best.pt on a FROZEN iPhone-eval holdout (idx % 5 == 0),
+        # never seen in training (build_dataset used iphone split="train"). This
+        # makes the metric an apples-to-apples iPhone-domain MPJPE that is directly
+        # comparable across the finetune / replay / joint experiments, instead of a
+        # random 5% of the (source-dominated) concat.
+        # Session-level holdout: if --iphone_eval_root is given, the eval set is a
+        # WHOLE capture session (e.g. rgbd_captures_04) that no train frame touches,
+        # so there is NO temporally-adjacent-frame leakage (the idx%5 split leaked
+        # near-duplicate neighbours). Otherwise fall back to the idx%5 eval split.
+        if getattr(args, "iphone_eval_root", ""):
+            eval_ds = IPhoneCaptures_RGBD(root=args.iphone_eval_root, mode="test",
+                                          with_depth=True, depth_cfg=depth_cfg,
+                                          split="all")
+        else:
+            eval_ds = IPhoneCaptures_RGBD(root=args.iphone_root, mode="test",
+                                          with_depth=True, depth_cfg=depth_cfg,
+                                          split="eval")
+        test_dataset = WithJointValid(eval_ds)
+        if getattr(args, "mp_heatmap", False):
+            test_dataset = WithHeatmap(test_dataset, sigma=args.hm_sigma,
+                                       jitter_px=0.0, drop_p=0.0, train=False)
+        print(f"[fixed-eval] iPhone-eval holdout: {len(test_dataset)} frames", flush=True)
+    else:
+        len_dataset = int(len(train_dataset) * 0.95)
+        left_len = len(train_dataset) - len_dataset
+        train_dataset, test_dataset = random_split(train_dataset, [len_dataset, left_len])
+        test_dataset.mode = "test"
 
+    # drop_last=True: a size-1 tail batch crashes BatchNorm in train mode
+    # ("Expected more than 1 value per channel"); e.g. 961 frames % 32 == 1.
     train_dataloader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8, drop_last=False
+        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8, drop_last=True
     )
     test_dataloader = DataLoader(
         test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=8, drop_last=False
@@ -222,16 +336,18 @@ def main(args, log_every=500):
         adapted = {}
         for k, v in src.items():
             if k == stem_key and k in tgt and v.shape != tgt[k].shape:
-                w = tgt[k].clone()              # (out, 4, 3, 3)
-                w[:, :3] = v                    # graft RGB filters
-                w[:, 3:] = 0.0                  # depth channel starts as no-op
+                w = tgt[k].clone()              # (out, in_chans, 3, 3)
+                nsrc = v.shape[1]               # #channels the checkpoint carries (3 or 4)
+                w[:, :nsrc] = v                 # graft existing filters (RGB[+depth])
+                w[:, nsrc:] = 0.0               # new channels (depth / 21 heatmaps) = no-op
                 adapted[k] = w
             elif k in tgt and v.shape == tgt[k].shape:
                 adapted[k] = v
         missing = [k for k in tgt if k not in adapted]
         model.load_state_dict(adapted, strict=False)
         print(f"[warm-start] {args.pretrain}: loaded {len(adapted)}/{len(tgt)} tensors "
-              f"(stem 3->4 grafted, depth ch zero-init); {len(missing)} reinit", flush=True)
+              f"(stem grafted to {tgt[stem_key].shape[1]}ch, extra ch zero-init); "
+              f"{len(missing)} reinit", flush=True)
     elif not getattr(args, "resume", "") and getattr(args, "pretrain", ""):
         print(f"[warm-start] WARNING: --pretrain {args.pretrain} not found; training from scratch", flush=True)
 
@@ -423,6 +539,25 @@ if __name__ == "__main__":
     parser.add_argument("--hands17_root", default="", help="HANDS17 root (training/)")
     parser.add_argument("--fpha_root", default="", help="FPHA root (Video_files/ + Hand_pose_annotation_v1_1/)")
     parser.add_argument("--iphone_root", default="rgbd_captures", help="iPhone captures dir (cap_*_gt.json from make_iphone_gt.py)")
+    parser.add_argument("--iphone_split", default="all", choices=["all", "train", "eval"],
+                        help="iphone holdout: 'train' (idx%%5!=0) for training, 'eval' (idx%%5==0) held out.")
+    parser.add_argument("--iphone_repeat", default=1, type=int,
+                        help="oversample the iphone set N times in the concat (joint-training rebalance).")
+    parser.add_argument("--source_limit", default=0, type=int,
+                        help="cap each non-iphone dataset to the first N frames (0 = no cap); "
+                             "keeps a small source 'replay' slice from drowning the target.")
+    parser.add_argument("--iphone_eval_root", default="",
+                        help="hold out a WHOLE capture session as eval (e.g. rgbd_captures_04); "
+                             "no temporal-neighbour leakage. Empty -> idx%%5 eval split.")
+    parser.add_argument("--mp_heatmap", action="store_true",
+                        help="append 21 MediaPipe-style 2D-keypoint heatmap channels to the "
+                             "input (RGB+D+21 = 25ch); offloads 2D localisation to MediaPipe.")
+    parser.add_argument("--hm_sigma", default=6.0, type=float, help="heatmap Gaussian sigma (px on the 256 crop)")
+    parser.add_argument("--hm_jitter", default=5.0, type=float, help="train-time 2D jitter std (px) to sim. MediaPipe noise")
+    parser.add_argument("--hm_drop", default=0.05, type=float, help="train-time per-joint heatmap dropout prob (sim. MediaPipe misses)")
+    parser.add_argument("--fixed_eval_iphone", action="store_true",
+                        help="select best.pt on the frozen iPhone-eval holdout (split=eval) "
+                             "instead of a random 5% of the concat -> comparable target metric.")
     parser.add_argument("--contactpose_dir", default="", help="ContactPose data dir (needs the toolkit on PYTHONPATH)")
     parser.add_argument("--pretrain", default="", type=str,
                         help="RGB checkpoint (e.g. pretrain/100.pt) to warm-start from: "

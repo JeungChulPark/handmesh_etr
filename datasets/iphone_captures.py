@@ -48,6 +48,16 @@ def _rotate(img, k):
     return img if k % 4 == 0 else cv2.rotate(img, _ROT_CODES[k % 4])
 
 
+def _rgb_path(stem):
+    """RGB frame for a capture stem: recorders use .png (rgbd_captures) or .jpg
+    (session_* dumps). Return whichever exists, defaulting to .png."""
+    for ext in (".png", ".jpg", ".jpeg"):
+        p = stem + "_rgb" + ext
+        if os.path.isfile(p):
+            return p
+    return stem + "_rgb.png"
+
+
 def hand_band_mask(depth_m, z0, bbox, band=0.12, pad=0.15):
     """Keep depth within `band` m of the hand-surface z0 inside a padded bbox; zero
     the rest. Reproduces hand_masked depth at deploy using only the GT hand depth."""
@@ -65,7 +75,8 @@ def hand_band_mask(depth_m, z0, bbox, band=0.12, pad=0.15):
 
 class IPhoneCaptures_RGBD(Dataset):
     def __init__(self, root, mode="train", with_depth=True, depth_cfg=None,
-                 band=0.12, min_valid=6, limit=0, return_abs_depth=False):
+                 band=0.12, min_valid=6, limit=0, return_abs_depth=False,
+                 split="all", split_mod=5):
         """
         Args:
             root: folder of cap_*_{rgb.png,depth.f32,json} + cap_*_gt.json.
@@ -73,6 +84,12 @@ class IPhoneCaptures_RGBD(Dataset):
             band: z-band half-width (m) for the hand depth mask.
             min_valid: drop frames with fewer valid GT joints than this.
             limit: cap index length (0 = all).
+            split: "all" (every frame), "train" (idx % split_mod != 0), or
+                "eval" (idx % split_mod == 0). A deterministic, position-based
+                holdout over the sorted index so a fixed eval set can be scored
+                across models WITHOUT any RNG (the trainer's random_split leaks a
+                different 5% each run and mixes in source frames, so it can't give
+                an apples-to-apples iPhone-domain metric).
         """
         self.root = root
         self.mode = mode
@@ -80,11 +97,17 @@ class IPhoneCaptures_RGBD(Dataset):
         self.band = band
         self.min_valid = min_valid
         self.return_abs_depth = return_abs_depth
+        self.split = split
+        self.split_mod = split_mod
         self.depth_cfg = {**dict(sigma=0.002, dropout_p=0.0, quant=0.001, n_holes=0,
                                  hole_frac=0.15, norm_scale=0.1), **(depth_cfg or {})}
         self.samples = self._build_index(limit)
+        if split == "train":
+            self.samples = [s for i, s in enumerate(self.samples) if i % split_mod != 0]
+        elif split == "eval":
+            self.samples = [s for i, s in enumerate(self.samples) if i % split_mod == 0]
         print(f"[IPhoneCaptures_RGBD] {len(self.samples)} frames  mode={mode} "
-              f"root={root} band={band}")
+              f"split={split} root={root} band={band}")
 
     def _build_index(self, limit):
         # root may be a single dir or a comma-separated list of capture folders.
@@ -93,7 +116,7 @@ class IPhoneCaptures_RGBD(Dataset):
         for root in roots:
             for gt in sorted(glob.glob(os.path.join(root, "cap_*_gt.json"))):
                 stem = gt[:-len("_gt.json")]
-                if not os.path.isfile(stem + "_rgb.png"):
+                if not os.path.isfile(_rgb_path(stem)):
                     continue
                 try:
                     d = json.load(open(gt))
@@ -132,7 +155,7 @@ class IPhoneCaptures_RGBD(Dataset):
         K = np.array(g["K"], np.float32)
         k = int(g.get("rot_k", 0))
 
-        bgr = cv2.imread(stem + "_rgb.png")
+        bgr = cv2.imread(_rgb_path(stem))
         image = cv2.cvtColor(_rotate(bgr, k), cv2.COLOR_BGR2RGB)
         H, W = image.shape[:2]
 

@@ -30,6 +30,7 @@ import argparse
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from tqdm import tqdm
 from torch.utils.data import DataLoader, random_split, Dataset
 
@@ -61,6 +62,10 @@ class WithMeta(Dataset):
             d["joint_valid"] = np.ones(21, np.float32)
         if "depth_med" not in d:
             d["depth_med"] = np.float32(0.0)
+        if "root_anchor" not in d:
+            d["root_anchor"] = np.zeros(3, np.float32)
+        if "anchor_valid" not in d:
+            d["anchor_valid"] = np.float32(0.0)
         return d
 
 
@@ -104,6 +109,14 @@ def masked_l2(pred, gt, valid, dim):
     return ((pred - gt) * v).pow(2).sum() / (v.sum() * dim + 1e-8)
 
 
+def masked_l2_w(pred, gt, valid, sample_w, dim):
+    """L2 masked by per-joint `valid` [B,21] AND a per-sample weight `sample_w` [B]
+    (used to drop occlusion-outlier frames from the absolute-joint loss)."""
+    w = valid * sample_w[:, None]                       # [B,21]
+    num = (((pred - gt) ** 2).sum(-1) * w).sum()
+    return num / (w.sum() * dim + 1e-8)
+
+
 def masked_mpjpe_mm(pred, gt, valid):
     d = torch.sqrt(((pred - gt) ** 2).sum(dim=-1))  # [B,21]
     return (d * valid).sum() / (valid.sum() + 1e-8) * 1000.0
@@ -139,14 +152,29 @@ def main(args, log_every=500):
     left_len = len(train_dataset) - len_dataset
     train_dataset, test_dataset = random_split(train_dataset, [len_dataset, left_len])
 
+    # Optional per-epoch frame cap: for a fine-tune we don't need all ~748k frames.
+    # A fixed random subset (seed-0) keeps epochs short while staying representative
+    # across the concatenated datasets; the val split is untouched (full, comparable).
+    if args.max_train_frames > 0 and args.max_train_frames < len(train_dataset):
+        from torch.utils.data import Subset
+        g = torch.Generator().manual_seed(0)
+        keep = torch.randperm(len(train_dataset), generator=g)[:args.max_train_frames]
+        train_dataset = Subset(train_dataset, keep.tolist())
+        print(f"[data] train subsampled to {len(train_dataset)} frames/epoch "
+              f"(val held-out unchanged: {len(test_dataset)})", flush=True)
+
     train_dataloader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8, drop_last=False
+        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers,
+        drop_last=False, pin_memory=True, persistent_workers=args.workers > 0,
+        prefetch_factor=4 if args.workers > 0 else None,
     )
     test_dataloader = DataLoader(
-        test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=8, drop_last=False
+        test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers,
+        drop_last=False, pin_memory=True, persistent_workers=args.workers > 0,
     )
 
-    model = MobRecon_DualStream(cfg=None, pose_in_chans=args.pose_in_chans)
+    model = MobRecon_DualStream(cfg=None, pose_in_chans=args.pose_in_chans,
+                                geo_anchor=not args.no_geo_anchor)
 
     # Warm-start: load the RGB backbone weights from an RGB checkpoint by remapping
     # 'backbone.*' -> 'rgb_backbone.*'. The DepthEncoder and TranslationHead start
@@ -223,16 +251,33 @@ def main(args, log_every=500):
             valid = (valid.float().to(device) if valid is not None
                      else torch.ones(kps3d.shape[0], 21, device=device))
             depth_med = item_dict["depth_med"].float().to(device)      # [B] raw-depth median
+            root_anchor = item_dict["root_anchor"].float().to(device)  # [B,3] depth-only anchor
+            anchor_conf = item_dict["anchor_valid"].float().to(device)  # [B] confidence in [0,1]
+            if args.rgb_only or args.no_geo_anchor:
+                root_anchor = torch.zeros_like(root_anchor)
+                anchor_conf = torch.zeros_like(anchor_conf)
             if args.rgb_only:
                 depth_med = torch.zeros_like(depth_med)
             abs_gt = kps3d + root_gt[:, None, :]
 
-            out = model(img, depth_med)
+            out = model(img, depth_med, root_anchor, anchor_conf)
 
+            # Confidence-gated anchor: the model computes root = anchor*conf + residual,
+            # so an occlusion frame (conf~0) is driven by the residual (RGB prior), not
+            # the wrong anchor. We can therefore supervise EVERY frame (GT root is always
+            # valid) and let the residual learn the fallback; Huber keeps it robust.
+            # --anchor_outlier_thr>0 optionally still hard-drops extreme frames.
+            if args.anchor_outlier_thr > 0 and not args.no_geo_anchor:
+                z_err = (root_anchor[:, 2] - root_gt[:, 2]).abs()
+                anchor_ok = (z_err < args.anchor_outlier_thr).float()  # [B]
+            else:
+                anchor_ok = torch.ones(kps3d.shape[0], device=device)
+            root_huber = F.smooth_l1_loss(out["root"], root_gt, beta=args.root_huber_beta,
+                                          reduction="none").sum(-1)  # [B]
             loss_pose = masked_l2(out["keypoints"], kps3d, valid, dim=3)
-            loss_root = (out["root"] - root_gt).pow(2).mean()
+            loss_root = (root_huber * anchor_ok).sum() / (anchor_ok.sum() + 1e-8)
             loss_scale = (out["scale"] - 1.0).abs().mean()
-            loss_abs = masked_l2(out["keypoints_abs"], abs_gt, valid, dim=3)
+            loss_abs = masked_l2_w(out["keypoints_abs"], abs_gt, valid, anchor_ok, dim=3)
             pred_xy = cam2pixel_torch(out["keypoints_abs"], item_dict["cam"].float().to(device)) / 256.0
             loss_2d = masked_l2(pred_xy, xy, valid, dim=2)
 
@@ -296,10 +341,15 @@ def main(args, log_every=500):
                 valid = (valid.float().to(device) if valid is not None
                          else torch.ones(kps3d.shape[0], 21, device=device))
                 depth_med = item_dict["depth_med"].float().to(device)
+                root_anchor = item_dict["root_anchor"].float().to(device)
+                anchor_valid = item_dict["anchor_valid"].float().to(device)
+                if args.rgb_only or args.no_geo_anchor:
+                    root_anchor = torch.zeros_like(root_anchor)
+                    anchor_valid = torch.zeros_like(anchor_valid)
                 if args.rgb_only:
                     depth_med = torch.zeros_like(depth_med)
                 abs_gt = kps3d + root_gt[:, None, :]
-                out = model(img, depth_med)
+                out = model(img, depth_med, root_anchor, anchor_valid)
                 test_rel += masked_mpjpe_mm(out["keypoints"], kps3d, valid)
                 test_abs += masked_mpjpe_mm(out["keypoints_abs"], abs_gt, valid)
                 test_root += (out["root"] - root_gt).pow(2).sum(-1).sqrt().mean() * 1000.0
@@ -324,6 +374,14 @@ def main(args, log_every=500):
                         "best_test_abs": best_test_abs},
                        os.path.join(ckpt_dir, "best.pt"))
             print(f"[epoch {epoch+1:3d}] new best -> best.pt ({test_abs:.2f}mm abs)", flush=True)
+
+        # latest.pt every epoch (overwrite) so an auto-resume wrapper can recover
+        # from a transient CUDA watchdog kill losing at most one epoch.
+        torch.save({"epoch": epoch + 1, "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "best_test_abs": best_test_abs},
+                   os.path.join(ckpt_dir, "latest.pt"))
         writer.flush()
 
     writer.close()
@@ -333,6 +391,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--exp", type=str, required=True, help="experiment name (runs/<exp>, mobrecon_ckpt/<exp>)")
     parser.add_argument("--batch", default=32, type=int, dest="batch_size")
+    parser.add_argument("--workers", default=8, type=int, help="DataLoader workers (CPU cores-2 is a good max)")
+    parser.add_argument("--max_train_frames", default=0, type=int,
+                        help="cap train frames/epoch (0=all). Fixed seed-0 random subset; "
+                             "shortens epochs on a compute-bound fine-tune.")
     parser.add_argument("--epoch", default=30, type=int)
     parser.add_argument("--lr", default=1e-4, type=float)
     parser.add_argument("--limit", default=5e6, type=float, help="max HanCo samples")
@@ -354,6 +416,15 @@ if __name__ == "__main__":
                         help="cosine-anneal LR to 0 over the run (for a final low-LR polish)")
     parser.add_argument("--clip", default=0.0, type=float,
                         help="grad-norm clip (0=off). Use ~1.0 to stabilise multi-dataset fine-tuning.")
+    parser.add_argument("--no_geo_anchor", action="store_true",
+                        help="disable the depth-only geometric root anchor (revert to free root "
+                             "regression). Default OFF = anchor ON (root = depth anchor + residual).")
+    parser.add_argument("--anchor_outlier_thr", default=0.0, type=float,
+                        help="0 = off (confidence gating handles bad anchors). If >0, also "
+                             "hard-drop frames whose anchor z disagrees with GT by more than "
+                             "this (m) from the root/abs loss.")
+    parser.add_argument("--root_huber_beta", default=0.05, type=float,
+                        help="Huber/smooth-L1 transition (m) for the robust root loss.")
     parser.add_argument("--rgb_only", action="store_true", help="ablation: zero depth + depth_med")
     parser.add_argument("--depth_source", default="cache", choices=["render", "cache"])
     parser.add_argument("--datasets", default="hanco",

@@ -107,41 +107,58 @@ class DepthEncoder(nn.Module):
 class TranslationHead(nn.Module):
     """Predict global root translation (x,y,z) and a metric scale s.
 
+    Geometric-anchor design (see docs + diag_dexycb_med.py): instead of regressing
+    the absolute root in metres from scratch (which memorises the training set's
+    depth statistics and collapses cross-dataset to 80-240mm), the head predicts a
+    small RESIDUAL on top of a depth-derived geometric anchor (`root_anchor`,
+    back-projected hand-depth centroid). Because the anchor is a physical metre
+    measurement, absolute position generalises across sensors/datasets; the
+    residual only learns the (centroid->wrist) correction and noise.
+
     Inputs:
-        pose_latent : [B, P]  RGB pose latent (lateral cue + RGB-prior fallback)
-        depth_desc  : [B, D]  depth descriptor (hand shape/extent in depth)
-        depth_med   : [B, 1]  raw-depth median over the hand region = absolute
-                              camera distance. This is the ONLY absolute-distance
-                              signal (the depth channel fed to the net is median-
-                              centred and carries no absolute z). At inference it
-                              is the median of the raw sensor depth.
-        gate        : [B, 1]  fraction of valid depth pixels in [0,1]; lets the
-                              head fall back to an RGB-conditioned prior when depth
-                              drops out (LiDAR holes / out of range).
+        pose_latent  : [B, P]  RGB pose latent (lateral cue + RGB-prior fallback)
+        depth_desc   : [B, D]  depth descriptor (hand shape/extent in depth)
+        depth_med    : [B, 1]  raw-depth median over the hand (legacy abs-z cue)
+        gate         : [B, 1]  fraction of valid depth pixels in [0,1]
+        root_anchor  : [B, 3]  depth-only geometric root anchor (metres)
+        anchor_valid : [B, 1]  1.0 if the anchor is usable; 0.0 -> head must fall
+                               back to an RGB-conditioned prior (root = residual).
 
     Outputs:
-        root  : [B, 3]
+        root  : [B, 3]  = anchor*valid + residual
         scale : [B, 1]  centred at 1.0 (s = 1 + 0.2*tanh(.)), a gentle correction.
     """
 
-    def __init__(self, pose_dim, depth_dim, hidden=256):
+    def __init__(self, pose_dim, depth_dim, hidden=256, geo_anchor=True):
         super().__init__()
-        in_dim = pose_dim + depth_dim + 2  # + depth_med + gate
+        # geo_anchor=False reproduces the legacy free-regression head (so old
+        # checkpoints load); True adds the anchor(3)+valid(1) inputs and predicts a
+        # residual on top of the depth anchor.
+        self.geo_anchor = geo_anchor
+        in_dim = pose_dim + depth_dim + 2 + (4 if geo_anchor else 0)  # +depth_med +gate [+anchor +valid]
         self.mlp = nn.Sequential(
             nn.Linear(in_dim, hidden), nn.ReLU(inplace=True),
             nn.Linear(hidden, hidden), nn.ReLU(inplace=True),
         )
-        self.root_head = nn.Linear(hidden, 3)
+        self.root_head = nn.Linear(hidden, 3)   # residual Δroot (anchor mode) or root (legacy)
         self.scale_head = nn.Linear(hidden, 1)
-        # Init the scale branch near zero so s starts ~1.0 (identity).
+        # Init scale near zero so s starts ~1.0; in anchor mode also zero the root
+        # head so the model STARTS at root=anchor (absolute position already correct).
+        if geo_anchor:
+            nn.init.zeros_(self.root_head.weight)
+            nn.init.zeros_(self.root_head.bias)
         nn.init.zeros_(self.scale_head.weight)
         nn.init.zeros_(self.scale_head.bias)
 
-    def forward(self, pose_latent, depth_desc, depth_med, gate):
-        h = torch.cat([pose_latent, depth_desc, depth_med, gate], dim=1)
-        h = self.mlp(h)
-        root = self.root_head(h)
-        scale = 1.0 + 0.2 * torch.tanh(self.scale_head(h))
+    def forward(self, pose_latent, depth_desc, depth_med, gate, root_anchor, anchor_valid):
+        parts = [pose_latent, depth_desc, depth_med, gate]
+        if self.geo_anchor:
+            parts += [root_anchor, anchor_valid]
+        feat = self.mlp(torch.cat(parts, dim=1))
+        root = self.root_head(feat)
+        if self.geo_anchor:
+            root = root_anchor * anchor_valid + root   # residual on the depth anchor
+        scale = 1.0 + 0.2 * torch.tanh(self.scale_head(feat))
         return root, scale
 
 
@@ -155,10 +172,11 @@ class MobRecon_DualStream(nn.Module):
     deliberately discards absolute distance.
     """
 
-    def __init__(self, cfg=None, latent_size=1024, depth_dim=128, pose_in_chans=3):
+    def __init__(self, cfg=None, latent_size=1024, depth_dim=128, pose_in_chans=3, geo_anchor=True):
         super().__init__()
         self.cfg = cfg
         self.latent_size = latent_size
+        self.geo_anchor = geo_anchor
         # pose_in_chans=3 -> RGB-only pose branch (original dual-stream).
         # pose_in_chans=4 -> HYBRID: the pose backbone ALSO sees depth (early
         #   fusion like the baseline), so depth aids pose, not just translation.
@@ -166,11 +184,13 @@ class MobRecon_DualStream(nn.Module):
         self.pose_in_chans = pose_in_chans
         self.rgb_backbone = RGBPoseBackbone(latent_size=latent_size, kpts_num=21, in_chans=pose_in_chans)
         self.depth_encoder = DepthEncoder(out_dim=depth_dim)
-        self.translation_head = TranslationHead(pose_dim=latent_size, depth_dim=depth_dim)
+        self.translation_head = TranslationHead(pose_dim=latent_size, depth_dim=depth_dim,
+                                                geo_anchor=geo_anchor)
 
-    def forward(self, img, depth_med=None):
+    def forward(self, img, depth_med=None, root_anchor=None, anchor_valid=None):
         depth = img[:, 3:4]
         pose_in = img if self.pose_in_chans == 4 else img[:, :3]
+        B = img.shape[0]
 
         rel_joints, pose_latent = self.rgb_backbone(pose_in)   # [B,21,3], [B,P]
         depth_desc = self.depth_encoder(depth)             # [B,D]
@@ -178,11 +198,20 @@ class MobRecon_DualStream(nn.Module):
         # gate = fraction of non-background depth pixels (background == 0).
         gate = (depth.abs() > 1e-6).float().mean(dim=(1, 2, 3), keepdim=False).unsqueeze(1)
         if depth_med is None:
-            depth_med = torch.zeros(img.shape[0], 1, device=img.device, dtype=img.dtype)
+            depth_med = torch.zeros(B, 1, device=img.device, dtype=img.dtype)
         elif depth_med.dim() == 1:
             depth_med = depth_med.unsqueeze(1)
+        # Geometric root anchor (depth-only); absent -> zeros + invalid so the head
+        # degrades to pure residual regression (backward compatible).
+        if root_anchor is None:
+            root_anchor = torch.zeros(B, 3, device=img.device, dtype=img.dtype)
+        if anchor_valid is None:
+            anchor_valid = torch.zeros(B, 1, device=img.device, dtype=img.dtype)
+        elif anchor_valid.dim() == 1:
+            anchor_valid = anchor_valid.unsqueeze(1)
 
-        root, scale = self.translation_head(pose_latent, depth_desc, depth_med, gate)
+        root, scale = self.translation_head(pose_latent, depth_desc, depth_med, gate,
+                                            root_anchor, anchor_valid)
         abs_joints = scale.unsqueeze(1) * rel_joints + root.unsqueeze(1)
 
         return {
@@ -196,6 +225,6 @@ class MobRecon_DualStream(nn.Module):
 class MobRecon_DualStream_onnx(MobRecon_DualStream):
     """Export twin: returns raw tensors (rel, root, scale, abs) instead of a dict."""
 
-    def forward(self, img, depth_med=None):
-        out = super().forward(img, depth_med)
+    def forward(self, img, depth_med=None, root_anchor=None, anchor_valid=None):
+        out = super().forward(img, depth_med, root_anchor, anchor_valid)
         return out["keypoints"], out["root"], out["scale"], out["keypoints_abs"]

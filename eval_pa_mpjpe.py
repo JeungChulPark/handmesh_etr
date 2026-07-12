@@ -70,6 +70,15 @@ def detect_pose_in_chans(state):
     return int(w.shape[1]) if w is not None else 3
 
 
+def detect_geo_anchor(state, latent_size=1024, depth_dim=128):
+    """Infer whether a checkpoint uses the geometric-anchor head from the head's
+    input width: legacy = pose+depth+2, anchor = pose+depth+6."""
+    w = state.get("translation_head.mlp.0.weight")
+    if w is None:
+        return True
+    return int(w.shape[1]) == latent_size + depth_dim + 6
+
+
 def main(args):
     torch.manual_seed(0)  # MUST match training so the val split is identical
     device = torch.device(args.device if (args.device != "cuda" or torch.cuda.is_available()) else "cpu")
@@ -94,10 +103,13 @@ def main(args):
     ckpt = torch.load(args.ckpt, map_location="cpu")
     state = ckpt.get("model_state_dict", ckpt)
     pose_in_chans = detect_pose_in_chans(state)
-    model = MobRecon_DualStream(cfg=None, pose_in_chans=pose_in_chans)
+    geo_anchor = detect_geo_anchor(state)
+    if not geo_anchor:
+        args.no_geo_anchor = True   # legacy ckpt: don't feed/expect an anchor
+    model = MobRecon_DualStream(cfg=None, pose_in_chans=pose_in_chans, geo_anchor=geo_anchor)
     model.load_state_dict(state, strict=True)
     model.to(device).eval()
-    print(f"[eval] {args.ckpt} (pose_in_chans={pose_in_chans}, "
+    print(f"[eval] {args.ckpt} (pose_in_chans={pose_in_chans}, geo_anchor={geo_anchor}, "
           f"epoch={ckpt.get('epoch','?')}) on {len(test_ds)} val frames", flush=True)
 
     rel, pa, ab, rooterr = [], [], [], []
@@ -114,9 +126,16 @@ def main(args):
             kps3d = item["keypoints3D"].numpy()                 # [B,21,3] root-rel GT (m)
             root_gt = item["root"].numpy()                      # [B,3]
             depth_med = item["depth_med"].float().to(device)
+            root_anchor = item.get("root_anchor")
+            anchor_valid = item.get("anchor_valid")
+            root_anchor = root_anchor.float().to(device) if root_anchor is not None else None
+            anchor_valid = anchor_valid.float().to(device) if anchor_valid is not None else None
+            if args.rgb_only or args.no_geo_anchor:
+                root_anchor = None
+                anchor_valid = None
             if args.rgb_only:
                 depth_med = torch.zeros_like(depth_med)
-            out = model(img, depth_med)
+            out = model(img, depth_med, root_anchor, anchor_valid)
             pred_rel = out["keypoints"].cpu().numpy()           # [B,21,3]
             pred_root = out["root"].cpu().numpy()               # [B,3]
             pred_abs = out["keypoints_abs"].cpu().numpy()
@@ -166,5 +185,7 @@ if __name__ == "__main__":
     ap.add_argument("--max_eval", default=0, type=int, help="cap #frames for a quick run (0=all)")
     ap.add_argument("--auc_max", default=50.0, type=float, help="PCK-AUC upper threshold (mm)")
     ap.add_argument("--rgb_only", action="store_true", help="ablation: zero depth + depth_med")
+    ap.add_argument("--no_geo_anchor", action="store_true",
+                    help="evaluate without the geometric root anchor (for pre-anchor checkpoints)")
     args = ap.parse_args()
     main(args)

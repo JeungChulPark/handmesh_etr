@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from datasets.augmentation import *
 from datasets.dataset_utils import *
-from datasets.depth_synth import render_hand_depth, add_sensor_noise, normalize_depth, corrupt_depth
+from datasets.depth_synth import render_hand_depth, add_sensor_noise, normalize_depth, corrupt_depth, geometric_root_anchor
 
 # from augmentation import *
 # from dataset_utils import *
@@ -576,7 +576,9 @@ class HanCo_ETRI_jitter(Dataset):
         valid = depth_crop > 0
         depth_med = float(np.median(depth_crop[valid])) if valid.any() else 0.0
         depth_norm = normalize_depth(depth_crop, scale=dc["norm_scale"])
-        return torch.from_numpy(depth_norm).float().unsqueeze(0), depth_med  # [1,256,256], scalar
+        # also hand back the raw (corrupted) crop so __getitem__ can build the
+        # depth-only geometric root anchor in the SAME crop/intrinsics frame.
+        return torch.from_numpy(depth_norm).float().unsqueeze(0), depth_med, depth_crop
 
     def __len__(self):
         return len(self.train_dict_list)
@@ -675,13 +677,17 @@ class HanCo_ETRI_jitter(Dataset):
         # cv2.imwrite('img2.png', cv2.cvtColor(draw_joint2D(torch.from_numpy(image).permute(2, 0, 1), cam2pixel(rot_joints, intr)[:, :2] / 256, idx=None), cv2.COLOR_RGB2BGR))
 
         depth_med = 0.0
+        root_anchor = np.zeros(3, np.float32)
+        anchor_valid = np.float32(0.0)
         if self.with_depth:
             # Render the depth channel from the camera-space GT joints (joints3d,
             # original intrinsics) and warp it into the same crop as the RGB.
-            depth_t, depth_med = self._render_depth_channel(
+            depth_t, depth_med, depth_crop = self._render_depth_channel(
                 joints3d, intr, image.shape[:2], img2bb_trans, idx, image_name=image_name
             )
             return_img = torch.cat([return_img, depth_t], dim=0)  # [4, 256, 256]
+            if self.return_abs_depth:
+                root_anchor, anchor_valid = geometric_root_anchor(depth_crop, new_cam)
 
         out = {
             # "image": aug_img,
@@ -696,6 +702,8 @@ class HanCo_ETRI_jitter(Dataset):
         }
         if self.return_abs_depth:
             out["depth_med"] = np.float32(depth_med)
+            out["root_anchor"] = root_anchor       # [3] depth-only abs-root anchor (m)
+            out["anchor_valid"] = anchor_valid      # 1.0 if depth sufficient
         return out
 
 

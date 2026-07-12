@@ -69,7 +69,7 @@ from torch.utils.data import Dataset
 
 from datasets.augmentation import color_jitter
 from datasets.dataset_utils import augmentation
-from datasets.depth_synth import add_sensor_noise, normalize_depth, corrupt_depth
+from datasets.depth_synth import add_sensor_noise, normalize_depth, corrupt_depth, geometric_root_anchor
 
 # DexYCB MANO 21-joint order matches FreiHAND/HanCo (and project depth_synth
 # HAND_BONES). If a future check shows a mismatch, set this permutation; identity
@@ -212,7 +212,7 @@ class DexYCB_RGBD(Dataset):
         valid = depth_crop > 0
         depth_med = float(np.median(depth_crop[valid])) if valid.any() else 0.0
         depth_norm = normalize_depth(depth_crop, scale=dc["norm_scale"])
-        return torch.from_numpy(depth_norm).float().unsqueeze(0), depth_med
+        return torch.from_numpy(depth_norm).float().unsqueeze(0), depth_med, depth_crop
 
     @staticmethod
     def _to_metres(joint_3d):
@@ -286,8 +286,9 @@ class DexYCB_RGBD(Dataset):
         return_img = torch.from_numpy(
             np.ascontiguousarray(aug_img.astype(np.uint8))).permute(2, 0, 1).float() / 255.0
         depth_med = 0.0
+        depth_crop = None
         if self.with_depth:
-            depth_t, depth_med = self._depth_channel(depth_full_m, seg, img2bb_trans, idx)
+            depth_t, depth_med, depth_crop = self._depth_channel(depth_full_m, seg, img2bb_trans, idx)
             return_img = torch.cat([return_img, depth_t], dim=0)  # [4,256,256]
 
         new_cam = cam_nh.copy()
@@ -301,6 +302,10 @@ class DexYCB_RGBD(Dataset):
         }
         if self.return_abs_depth:
             out["depth_med"] = np.float32(depth_med)
+            if depth_crop is not None:
+                out["root_anchor"], out["anchor_valid"] = geometric_root_anchor(depth_crop, new_cam)
+            else:
+                out["root_anchor"], out["anchor_valid"] = np.zeros(3, np.float32), np.float32(0.0)
         return out
 
 

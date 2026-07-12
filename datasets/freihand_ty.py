@@ -23,10 +23,12 @@ class Freihand(Dataset):
         config=None,
         mode="train",
         img_size=256,
+        full=False,
     ):
         self.mode = mode  # {"train", "eval"}
         self.use_pca = False
         self.center_idx = 0
+        self.full = full   # True = use all 130240 images (4x: same 32560 poses x 4 backgrounds)
 
         if mode == "train":
             img_path = "training/rgb"
@@ -74,7 +76,11 @@ class Freihand(Dataset):
         assert len(self.verts) == len(self.joint), "the length of two annotation files are DIFFERENT!"
         assert len(self.verts) == len(self.K), "the length of two annotation files are DIFFERENT!"
 
-        self.image_names = self.image_names[: len(self.verts)]
+        # annotations (verts/joint/K) are per-POSE (32560); images are per-pose x 4 backgrounds.
+        # full mode keeps all 130240 images and maps image idx -> pose idx % n_ann in __getitem__.
+        self.n_ann = len(self.verts)
+        if not (self.full and self.mode == "train"):
+            self.image_names = self.image_names[: self.n_ann]
 
         self.img_transform = transforms.Compose(
             [
@@ -92,6 +98,7 @@ class Freihand(Dataset):
 
     def __getitem__(self, idx):
         image_name = self.image_names[idx]
+        a = idx % self.n_ann          # pose annotation index (image = pose x 4 backgrounds in full mode)
         ori_img = load_img(os.path.join(self.image_dir, image_name))
 
         aug_img, img2bb_trans, bb2img_trans, rot, _, cam, cam_nh, no_rot_trans = augmentation(
@@ -100,7 +107,7 @@ class Freihand(Dataset):
             self.mode,
             exclude_flip=True,
             rotation=True,
-            cam_param=np.array(self.K[idx]),
+            cam_param=np.array(self.K[a]),
             need_heatmap=False,
         )
 
@@ -113,11 +120,11 @@ class Freihand(Dataset):
             ]
         ).astype(np.float32)
 
-        joint = np.array(self.joint[idx])
+        joint = np.array(self.joint[a])
         # verts = np.array(self.verts[idx])
 
         xy = self.get_2D_annotation(joint, cam)  # cam is already rotated
-        cam = np.array(self.K[idx])
+        cam = np.array(self.K[a])
 
         joint = joint.dot(rot_mat)
         # verts = verts.dot(rot_mat)

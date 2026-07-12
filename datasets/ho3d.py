@@ -51,7 +51,7 @@ from torch.utils.data import Dataset
 
 from datasets.augmentation import color_jitter
 from datasets.dataset_utils import augmentation
-from datasets.depth_synth import add_sensor_noise, normalize_depth, corrupt_depth
+from datasets.depth_synth import add_sensor_noise, normalize_depth, corrupt_depth, geometric_root_anchor
 
 # HO3D handJoints3D order == MANO/FreiHAND; identity unless a check says otherwise.
 JOINT_PERM = np.arange(21)
@@ -163,7 +163,7 @@ class HO3D_RGBD(Dataset):
         valid = depth_crop > 0
         depth_med = float(np.median(depth_crop[valid])) if valid.any() else 0.0
         depth_norm = normalize_depth(depth_crop, scale=dc["norm_scale"])
-        return torch.from_numpy(depth_norm).float().unsqueeze(0), depth_med
+        return torch.from_numpy(depth_norm).float().unsqueeze(0), depth_med, depth_crop
 
     # --------------------------------------------------------------- getitem
     def __getitem__(self, idx):
@@ -227,8 +227,9 @@ class HO3D_RGBD(Dataset):
         return_img = torch.from_numpy(
             np.ascontiguousarray(aug_img.astype(np.uint8))).permute(2, 0, 1).float() / 255.0
         depth_med = 0.0
+        depth_crop = None
         if self.with_depth:
-            depth_t, depth_med = self._depth_channel(depth_full_m, joints3d, img2bb_trans, idx)
+            depth_t, depth_med, depth_crop = self._depth_channel(depth_full_m, joints3d, img2bb_trans, idx)
             return_img = torch.cat([return_img, depth_t], dim=0)
 
         new_cam = cam_nh.copy()
@@ -242,6 +243,10 @@ class HO3D_RGBD(Dataset):
         }
         if getattr(self, "return_abs_depth", False):
             out["depth_med"] = np.float32(depth_med)
+            if depth_crop is not None:
+                out["root_anchor"], out["anchor_valid"] = geometric_root_anchor(depth_crop, new_cam)
+            else:
+                out["root_anchor"], out["anchor_valid"] = np.zeros(3, np.float32), np.float32(0.0)
         return out
 
 
