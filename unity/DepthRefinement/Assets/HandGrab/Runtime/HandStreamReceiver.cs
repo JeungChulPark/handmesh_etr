@@ -1,0 +1,167 @@
+using System;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
+using UnityEngine;
+
+namespace HandMesh.HandGrab
+{
+    /// <summary>
+    /// Receives hand-joint packets from unity_stream_hand.py over UDP and exposes
+    /// the latest 21 joints in Unity world space (meters).
+    ///
+    /// Packet: {"t":<sec>,"det":1,"fps":21.3,"j":[63 floats]} — camera frame,
+    /// x right / y down / z forward. Mapping to Unity: (x, -y, z), optional
+    /// x-mirror, then transformed by this GameObject's transform (put the
+    /// receiver at the virtual "camera" pose in your scene).
+    ///
+    /// infer_ipad_stream.py additionally sends the iPad's ARKit camera pose as
+    /// "cp" (world position [x,y,z]) and "cq" (rotation quaternion [x,y,z,w]),
+    /// exposed here via <see cref="CameraPosition"/>/<see cref="CameraRotation"/>.
+    /// Add <see cref="StreamedCameraDriver"/> to apply it to this transform (and
+    /// the Main Camera) for a world-locked view that follows the device.
+    /// </summary>
+    public class HandStreamReceiver : MonoBehaviour
+    {
+        public const int JointCount = 21;
+
+        [Tooltip("UDP port unity_stream_hand.py sends to")]
+        public int port = 9750;
+
+        [Tooltip("Flip X so the hand moves like a mirror (natural for a front-facing camera)")]
+        public bool mirrorX = true;
+
+        [Header("One Euro smoothing")]
+        public bool smooth = true;
+        public float minCutoff = 1.2f;
+        public float beta = 0.05f;
+
+        [Tooltip("Seconds without a detected hand before IsTracked goes false")]
+        public float trackingTimeout = 0.3f;
+
+        /// <summary>Latest joints in world space; valid only while IsTracked.</summary>
+        public Vector3[] Joints { get; } = new Vector3[JointCount];
+        public bool IsTracked { get; private set; }
+        public float StreamFps { get; private set; }
+
+        /// <summary>True once a packet carried the device camera pose ("cp"/"cq").</summary>
+        public bool HasCameraPose { get; private set; }
+        /// <summary>Streamed ARKit camera pose, Unity world space (v2 iPad stream).</summary>
+        public Vector3 CameraPosition { get; private set; }
+        public Quaternion CameraRotation { get; private set; } = Quaternion.identity;
+
+        [Serializable]
+        class Packet
+        {
+            public double t;
+            public int det;
+            public float fps;
+            public float[] j;
+            public float[] cp;   // device camera world position [x,y,z] (optional)
+            public float[] cq;   // device camera rotation quaternion [x,y,z,w] (optional)
+        }
+
+        UdpClient _udp;
+        Thread _thread;
+        volatile bool _running;
+        readonly object _lock = new object();
+        float[] _latest;                 // raw 63 floats, camera frame
+        float[] _latestCp, _latestCq;    // raw device camera pose, or null
+        double _latestT;
+        float _latestFps;
+        float _lastDetTime = -999f;
+        OneEuroFilterV3[] _filters;
+
+        void OnEnable()
+        {
+            _filters = new OneEuroFilterV3[JointCount];
+            for (int i = 0; i < JointCount; i++)
+                _filters[i] = new OneEuroFilterV3(minCutoff, beta);
+
+            _udp = new UdpClient(port);
+            _udp.Client.ReceiveTimeout = 500;
+            _running = true;
+            _thread = new Thread(ReceiveLoop) { IsBackground = true };
+            _thread.Start();
+            Debug.Log($"[HandStreamReceiver] listening on udp:{port}");
+        }
+
+        void OnDisable()
+        {
+            _running = false;
+            _udp?.Close();
+            _thread?.Join(500);
+            _udp = null;
+            _thread = null;
+        }
+
+        void ReceiveLoop()
+        {
+            var any = new IPEndPoint(IPAddress.Any, 0);
+            while (_running)
+            {
+                try
+                {
+                    byte[] data = _udp.Receive(ref any);
+                    var pkt = JsonUtility.FromJson<Packet>(System.Text.Encoding.UTF8.GetString(data));
+                    if (pkt == null) continue;
+                    lock (_lock)
+                    {
+                        _latestFps = pkt.fps;
+                        _latestT = pkt.t;
+                        _latest = (pkt.det == 1 && pkt.j != null && pkt.j.Length == JointCount * 3)
+                            ? pkt.j : null;
+                        if (pkt.cp != null && pkt.cp.Length == 3 &&
+                            pkt.cq != null && pkt.cq.Length == 4)
+                        {
+                            _latestCp = pkt.cp;
+                            _latestCq = pkt.cq;
+                        }
+                    }
+                }
+                catch (SocketException) { /* timeout / closed — keep polling */ }
+                catch (Exception e) { Debug.LogWarning($"[HandStreamReceiver] {e.Message}"); }
+            }
+        }
+
+        void Update()
+        {
+            float[] raw, cp, cq;
+            double t;
+            lock (_lock)
+            {
+                raw = _latest;
+                cp = _latestCp;
+                cq = _latestCq;
+                t = _latestT;
+                StreamFps = _latestFps;
+            }
+
+            if (cp != null && cq != null)   // pose freezes at the last value on dropout
+            {
+                CameraPosition = new Vector3(cp[0], cp[1], cp[2]);
+                CameraRotation = new Quaternion(cq[0], cq[1], cq[2], cq[3]);
+                HasCameraPose = true;
+            }
+
+            if (raw != null)
+            {
+                _lastDetTime = Time.time;
+                for (int i = 0; i < JointCount; i++)
+                {
+                    // camera frame (x right, y down, z fwd) -> Unity (x right, y up, z fwd)
+                    var p = new Vector3(mirrorX ? -raw[i * 3] : raw[i * 3],
+                                        -raw[i * 3 + 1],
+                                        raw[i * 3 + 2]);
+                    if (smooth) p = _filters[i].Filter(p, t);
+                    Joints[i] = transform.TransformPoint(p);
+                }
+            }
+
+            bool tracked = Time.time - _lastDetTime < trackingTimeout;
+            if (!tracked && IsTracked)
+                foreach (var f in _filters) f.Reset();
+            IsTracked = tracked;
+        }
+    }
+}
