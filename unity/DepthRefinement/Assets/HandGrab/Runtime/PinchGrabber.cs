@@ -18,15 +18,29 @@ namespace HandMesh.HandGrab
         [Tooltip("Pinch closes below this thumb-index distance (m)")]
         public float grabDistance = 0.035f;
         [Tooltip("Pinch opens above this distance (m) — hysteresis")]
-        public float releaseDistance = 0.055f;
+        public float releaseDistance = 0.06f;
         [Tooltip("Max distance from pinch point to a Grabbable's surface (m)")]
         public float grabRadius = 0.10f;
+
+        [Header("Release robustness (joint noise must not drop the object)")]
+        [Tooltip("The OPEN pose must persist this long before the object is released (s). "
+               + "A single noisy frame over releaseDistance no longer drops the grab.")]
+        public float releaseHoldSec = 0.12f;
+        [Tooltip("Also require the index finger to be clearly EXTENDED (hand really open), "
+               + "not just a thumb-index distance spike. Scale-invariant: "
+               + "dist(wrist,indexTip) > openExtendRatio * dist(wrist,indexMcp).")]
+        public bool requireOpenHand = true;
+        [Tooltip("Index-extension ratio counting as 'open'. Pinch/curl ≈ 1.0-1.2, open ≈ 1.6+. "
+               + "Lower = easier release; raise if noise drops the object again.")]
+        public float openExtendRatio = 1.2f;
 
         HandStreamReceiver _recv;
         Grabbable _held;
         Quaternion _rotOffset;          // held-object rotation in the hand frame
         Vector3 _posOffset;             // held-object position in the hand frame
         bool _pinching;
+        float _pinchDistSm = -1f;       // EMA of the thumb-index distance (spike filter)
+        float _openSince = -1f;         // Time.time when the open pose began, -1 = not open
 
         // velocity estimate for throw-on-release
         Vector3 _prevPinch;
@@ -50,14 +64,19 @@ namespace HandMesh.HandGrab
         {
             if (!_recv.IsTracked)
             {
-                if (_held != null) Release();
+                // tracking lost (0.3 s timeout upstream) → gentle drop, no throw:
+                // the last velocity estimate is noise from the dying track, not a gesture.
+                if (_held != null) { _held.OnRelease(Vector3.zero, Vector3.zero); _held = null; }
                 _pinching = false;
+                _pinchDistSm = -1f;
+                _openSince = -1f;
                 return;
             }
 
             var j = _recv.Joints;
             Vector3 pinch = (j[ThumbTip] + j[IndexTip]) * 0.5f;
             float pinchDist = Vector3.Distance(j[ThumbTip], j[IndexTip]);
+            _pinchDistSm = _pinchDistSm < 0f ? pinchDist : Mathf.Lerp(_pinchDistSm, pinchDist, 0.5f);
             Quaternion handRot = HandRotation(j);
 
             float dt = Mathf.Max(Time.deltaTime, 1e-4f);
@@ -72,19 +91,37 @@ namespace HandMesh.HandGrab
             _prevPinch = pinch;
             _prevHandRot = handRot;
 
-            if (!_pinching && pinchDist < grabDistance)
+            if (!_pinching && _pinchDistSm < grabDistance)
             {
                 _pinching = true;
+                _openSince = -1f;
                 TryGrab(pinch, handRot);
             }
-            else if (_pinching && pinchDist > releaseDistance)
+            else if (_pinching)
             {
-                _pinching = false;
-                if (_held != null) Release();
+                // release ONLY when the hand is clearly open AND stays open: smoothed distance
+                // past the hysteresis threshold, index extended, held for releaseHoldSec.
+                if (!IsHandOpen(j)) _openSince = -1f;
+                else if (_openSince < 0f) _openSince = Time.time;
+                else if (Time.time - _openSince >= releaseHoldSec)
+                {
+                    _pinching = false;
+                    _openSince = -1f;
+                    if (_held != null) Release();
+                }
             }
 
             if (_held != null)
                 _held.MoveTo(pinch + handRot * _posOffset, handRot * _rotOffset);
+        }
+
+        bool IsHandOpen(Vector3[] j)
+        {
+            if (_pinchDistSm <= releaseDistance) return false;
+            if (!requireOpenHand) return true;
+            float mcp = Vector3.Distance(j[Wrist], j[IndexMcp]);
+            float tip = Vector3.Distance(j[Wrist], j[IndexTip]);
+            return mcp > 1e-5f && tip > openExtendRatio * mcp;
         }
 
         void TryGrab(Vector3 pinch, Quaternion handRot)

@@ -1,31 +1,67 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace HandMesh.HandGrab
 {
     /// <summary>
-    /// Shows how far the hand is from the nearest grabbable — the monitor gives no
-    /// depth cue, so without this it is hard to tell WHERE an object sits relative
-    /// to the hand. Draws a guide line from the pinch point (thumb-index mid) to the
-    /// closest point on the nearest Grabbable, a small marker on that surface point,
-    /// and a "12.3 cm" label at the line's midpoint. The line fades red (far) →
-    /// yellow → green (within the PinchGrabber's grab radius = pinch now grabs it).
-    /// Hidden while a grab is in progress or nothing is in range.
+    /// Proximity cue, split across two visuals (user-refined design):
+    ///
+    ///   * GUIDE LINE (distance measurement) — a solid NEUTRAL line from the pinch point
+    ///     to the closest point on the nearest Grabbable, with a surface marker and a
+    ///     "12.3 cm" label. Pure geometry; it no longer encodes distance in its colour
+    ///     (that was hard to read against the video background).
+    ///   * BOX (distance colour) — every Grabbable gets a solid wireframe box that
+    ///     encodes the pinch distance: grey (far) → yellow (approaching) → GREEN
+    ///     (within the PinchGrabber's grab radius = pinch now grabs it). Hidden while
+    ///     that object is held.
+    ///
+    /// The box is 12 thin SOLID beams (scaled cube meshes) parented to the object, so it
+    /// follows position/rotation/scale for free; only the colour is touched per frame.
+    /// (A LineRenderer strip was tried first, but its camera-facing ribbon folds at 3D
+    /// corners and never reads as clean solid edges.)
     /// </summary>
     [RequireComponent(typeof(HandStreamReceiver))]
     public class GrabProximityIndicator : MonoBehaviour
     {
-        [Tooltip("Show the guide when the nearest grabbable is within this range (m)")]
+        [Tooltip("Colour starts warming up (grey → yellow) inside this range (m)")]
         public float maxDistance = 1.5f;
-        [Tooltip("Guide line width (m)")]
-        public float lineWidth = 0.003f;
-        [Tooltip("Show the distance text label (cm)")]
+        [Tooltip("Box edge width (m, world)")]
+        public float lineWidth = 0.0025f;
+        [Tooltip("Grow the box this much beyond the mesh so it doesn't touch the surface")]
+        public float boxPadding = 1.08f;
+        [Tooltip("Show the distance text label (cm) on the nearest grabbable")]
         public bool showLabel = true;
+
+        [Tooltip("Box colour when the object can be grabbed RIGHT NOW (pinch would take it)")]
+        public Color grabbableColor = new Color(0.25f, 0.95f, 0.35f);
+        [Tooltip("Box colour while approaching (blends from far colour)")]
+        public Color nearColor = new Color(0.95f, 0.85f, 0.2f);
+        [Tooltip("Box colour when far / hand not tracked (solid — boxes are always crisp)")]
+        public Color farColor = new Color(0.7f, 0.7f, 0.7f);
+
+        [Header("Guide line (distance measurement, neutral colour)")]
+        [Tooltip("Draw the solid pinch→object guide line to the nearest grabbable")]
+        public bool showGuideLine = true;
+        [Tooltip("Guide line / marker colour — fixed; the BOX carries the distance colour")]
+        public Color guideColor = Color.white;
+        [Tooltip("Guide line width (m)")]
+        public float guideWidth = 0.003f;
+
+        sealed class BoxVis
+        {
+            public GameObject root;     // parented to the grabbable, holds the 12 beams
+            public Material mat;        // per-box material instance — colour = proximity
+        }
 
         HandStreamReceiver _recv;
         PinchGrabber _grabber;          // optional: supplies the "grabbable now" radius
-        LineRenderer _line;
-        Transform _marker;
-        float _dist = -1f;              // <0 = nothing to show this frame
+        Material _mat;
+        LineRenderer _guide;            // pinch → nearest-object solid line
+        Transform _marker;              // surface point the line ends on
+        readonly Dictionary<Grabbable, BoxVis> _boxes = new();
+        readonly List<Grabbable> _stale = new();
+
+        float _dist = -1f;              // nearest-object distance, <0 = no label this frame
         Vector3 _labelWorld;
         GUIStyle _style;
 
@@ -35,70 +71,136 @@ namespace HandMesh.HandGrab
         {
             _recv = GetComponent<HandStreamReceiver>();
             _grabber = GetComponent<PinchGrabber>();
-            var mat = new Material(Shader.Find("Sprites/Default"));
+            _mat = new Material(Shader.Find("Sprites/Default"));
 
             var go = new GameObject("proximity_line");
             go.transform.SetParent(transform, false);
-            _line = go.AddComponent<LineRenderer>();
-            _line.positionCount = 2;
-            _line.startWidth = _line.endWidth = lineWidth;
-            _line.material = mat;
-            _line.useWorldSpace = true;
+            _guide = go.AddComponent<LineRenderer>();
+            _guide.positionCount = 2;
+            _guide.startWidth = _guide.endWidth = guideWidth;
+            _guide.material = _mat;
+            _guide.useWorldSpace = true;
+            _guide.startColor = _guide.endColor = guideColor;
 
             var m = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             m.name = "proximity_marker";
             Destroy(m.GetComponent<Collider>());        // visual only — no physics
             m.transform.SetParent(transform, false);
             m.transform.localScale = Vector3.one * 0.012f;
-            m.GetComponent<MeshRenderer>().material = mat;
+            var mr = m.GetComponent<MeshRenderer>();
+            mr.material = _mat;
+            mr.material.color = guideColor;
             _marker = m.transform;
         }
+
+        BoxVis MakeBox(Grabbable g)
+        {
+            // local mesh bounds (unit primitives: 0.5 extents) — the box inherits the
+            // object's transform, so rotation/scale/motion need no per-frame work
+            var mf = g.GetComponentInChildren<MeshFilter>();
+            Bounds b = mf != null && mf.sharedMesh != null
+                ? mf.sharedMesh.bounds
+                : new Bounds(Vector3.zero, Vector3.one);
+            Vector3 e = b.extents * boxPadding;
+            Vector3 c = b.center;
+
+            // beam thickness in the object's LOCAL units (world lineWidth / lossy scale)
+            Vector3 s = g.transform.lossyScale;
+            float t = lineWidth / Mathf.Max(1e-4f, (s.x + s.y + s.z) / 3f);
+
+            // solid opaque unlit beams (built-in pipeline); Sprites/Default is kept for the
+            // guide LINE only — it is a no-depth-write transparent shader, wrong for meshes
+            Shader unlit = Shader.Find("Unlit/Color");
+            var vis = new BoxVis
+            {
+                root = new GameObject("grab_box"),
+                mat = unlit != null ? new Material(unlit) : new Material(_mat),
+            };
+            vis.root.transform.SetParent(g.transform, false);
+
+            // 12 solid beams: 4 along each axis, on the box's edge lines
+            for (int sy = -1; sy <= 1; sy += 2)
+                for (int sz = -1; sz <= 1; sz += 2)
+                    AddBeam(vis, c + new Vector3(0, sy * e.y, sz * e.z), new Vector3(2 * e.x + t, t, t));
+            for (int sx = -1; sx <= 1; sx += 2)
+                for (int sz = -1; sz <= 1; sz += 2)
+                    AddBeam(vis, c + new Vector3(sx * e.x, 0, sz * e.z), new Vector3(t, 2 * e.y + t, t));
+            for (int sx = -1; sx <= 1; sx += 2)
+                for (int sy = -1; sy <= 1; sy += 2)
+                    AddBeam(vis, c + new Vector3(sx * e.x, sy * e.y, 0), new Vector3(t, t, 2 * e.z + t));
+            return vis;
+        }
+
+        void AddBeam(BoxVis vis, Vector3 localPos, Vector3 localScale)
+        {
+            var beam = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            beam.name = "edge";
+            Destroy(beam.GetComponent<Collider>());     // visual only — must not block grabs
+            beam.transform.SetParent(vis.root.transform, false);
+            beam.transform.localPosition = localPos;
+            beam.transform.localScale = localScale;
+            var mr = beam.GetComponent<MeshRenderer>();
+            mr.sharedMaterial = vis.mat;
+            mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            mr.receiveShadows = false;
+        }
+
+        static void SetBoxColor(BoxVis vis, Color c) => vis.mat.color = c;
 
         void LateUpdate()
         {
             _dist = -1f;
+            bool tracked = _recv.IsTracked;
+            Vector3 pinch = Vector3.zero;
+            if (tracked)
+                pinch = (_recv.Joints[ThumbTip] + _recv.Joints[IndexTip]) * 0.5f;
+            float near = _grabber != null ? _grabber.grabRadius : 0.10f;
 
+            Grabbable nearest = null;
+            Vector3 nearestPoint = Vector3.zero;
+            float nearestDist = float.MaxValue;
             bool holding = false;
+
             foreach (var g in FindObjectsOfType<Grabbable>())
-                if (g.IsHeld) { holding = true; break; }
-
-            if (_recv.IsTracked && !holding)
             {
-                Vector3 pinch = (_recv.Joints[ThumbTip] + _recv.Joints[IndexTip]) * 0.5f;
+                if (!_boxes.TryGetValue(g, out BoxVis box) || box.root == null)
+                    _boxes[g] = box = MakeBox(g);
 
-                Grabbable best = null;
-                Vector3 bestPoint = Vector3.zero;
-                float bestDist = maxDistance;
-                foreach (var g in FindObjectsOfType<Grabbable>())
-                {
-                    Vector3 p = g.GetComponent<Collider>().ClosestPoint(pinch);
-                    float d = Vector3.Distance(p, pinch);
-                    if (d < bestDist) { bestDist = d; bestPoint = p; best = g; }
-                }
+                if (g.IsHeld) { holding = true; box.root.SetActive(false); continue; }
+                box.root.SetActive(true);
 
-                if (best != null)
-                {
-                    _dist = bestDist;
-                    _labelWorld = (pinch + bestPoint) * 0.5f;
+                if (!tracked) { SetBoxColor(box, farColor); continue; }
 
-                    float near = _grabber != null ? _grabber.grabRadius : 0.10f;
-                    Color c = bestDist <= near
-                        ? new Color(0.25f, 0.95f, 0.35f)                       // grabbable now
-                        : Color.Lerp(new Color(0.95f, 0.85f, 0.2f),            // yellow near
-                                     new Color(0.9f, 0.25f, 0.2f),             // red far
-                                     Mathf.InverseLerp(near, maxDistance, bestDist));
+                Vector3 p = g.GetComponent<Collider>().ClosestPoint(pinch);
+                float d = Vector3.Distance(p, pinch);
+                if (d < nearestDist) { nearestDist = d; nearestPoint = p; nearest = g; }
 
-                    _line.SetPosition(0, pinch);
-                    _line.SetPosition(1, bestPoint);
-                    _line.startColor = _line.endColor = c;
-                    _marker.position = bestPoint;
-                    _marker.GetComponent<MeshRenderer>().material.color = c;
-                }
+                // the BOX carries the distance colour: grey → yellow → green (grabbable)
+                Color c = d <= near
+                    ? grabbableColor
+                    : Color.Lerp(nearColor, farColor, Mathf.InverseLerp(near, maxDistance, d));
+                SetBoxColor(box, c);
             }
 
-            bool show = _dist >= 0f;
-            _line.gameObject.SetActive(show);
-            _marker.gameObject.SetActive(show);
+            // drop boxes whose grabbable was destroyed
+            _stale.Clear();
+            foreach (var kv in _boxes)
+                if (kv.Key == null) _stale.Add(kv.Key);
+            foreach (var k in _stale) _boxes.Remove(k);
+
+            // the GUIDE LINE measures the distance: solid neutral pinch → surface segment
+            bool guideOn = showGuideLine && tracked && !holding
+                           && nearest != null && nearestDist <= maxDistance;
+            if (guideOn)
+            {
+                _dist = nearestDist;
+                _labelWorld = (pinch + nearestPoint) * 0.5f;
+                _guide.SetPosition(0, pinch);
+                _guide.SetPosition(1, nearestPoint);
+                _marker.position = nearestPoint;
+            }
+            _guide.gameObject.SetActive(guideOn);
+            _marker.gameObject.SetActive(guideOn);
         }
 
         void OnGUI()

@@ -26,7 +26,8 @@ namespace HandMesh.DepthRefinement
         // model joint order (HandSphereDriver.JointNames / MediaPipe)
         const int Wrist = 0, ThumbTip = 4, IndexMcp = 5, IndexTip = 8, LittleMcp = 17;
 
-        [Header("Pose source (auto-found when empty; server > hybrid B > dual-stream)")]
+        [Header("Pose source (auto-found when empty; server > fastvit > hybrid B > dual-stream)")]
+        [SerializeField] HybridFastVitHandProvider _fastvit;
         [SerializeField] HybridBHandProvider _hybrid;
         [SerializeField] DualStreamHandProvider _dual;
         [Tooltip("SERVER-mode source (joints inferred on the PC by infer_ipad_stream.py and " +
@@ -40,9 +41,21 @@ namespace HandMesh.DepthRefinement
         [Tooltip("Pinch CLOSES (grab) when thumb–index tip distance < this. ~3.5 cm.")]
         [SerializeField] float _grabDist = 0.035f;
         [Tooltip("Pinch OPENS (release) when tip distance > this — hysteresis avoids flicker.")]
-        [SerializeField] float _releaseDist = 0.055f;
+        [SerializeField] float _releaseDist = 0.06f;
         [Tooltip("Max distance from pinch point to a grabbable's surface (m).")]
         [SerializeField] float _grabRadius = 0.10f;
+
+        [Header("Release robustness (joint noise must not drop the object)")]
+        [Tooltip("The OPEN pose must persist this long before the object is released (s). "
+               + "A single noisy frame over Release Dist no longer drops the grab.")]
+        [SerializeField] float _releaseHoldSec = 0.12f;
+        [Tooltip("Also require the index finger to be clearly EXTENDED (hand really open), not "
+               + "just a thumb-index distance spike. Scale-invariant: dist(wrist,indexTip) > "
+               + "ratio * dist(wrist,indexMcp).")]
+        [SerializeField] bool _requireOpenHand = true;
+        [Tooltip("Index-extension ratio counting as 'open'. Pinch/curl ≈ 1.0-1.2, open ≈ 1.6+. "
+               + "Lower = easier release; raise if noise drops the object again.")]
+        [SerializeField] float _openExtendRatio = 1.2f;
 
         [Header("Smoothing / robustness")]
         [Tooltip("Exponential smoothing of the pinch pose (0 = raw, 0.9 = very smooth).")]
@@ -62,6 +75,8 @@ namespace HandMesh.DepthRefinement
 
         // pinch state
         bool _pinching;
+        float _pinchDistSm = -1f;       // EMA of the thumb-index distance (spike filter)
+        float _openSince = -1f;         // Time.time when the open pose began, -1 = not open
         GrabbableObject _held;
         Vector3 _posOffset;             // held-object position in the hand frame
         Quaternion _rotOffset;          // held-object rotation in the hand frame
@@ -77,6 +92,7 @@ namespace HandMesh.DepthRefinement
 
         void Start()
         {
+            if (_fastvit == null) _fastvit = FindFirstObjectByType<HybridFastVitHandProvider>();
             if (_hybrid == null) _hybrid = FindFirstObjectByType<HybridBHandProvider>();
             if (_dual == null) _dual = FindFirstObjectByType<DualStreamHandProvider>();
             if (_server == null) _server = FindFirstObjectByType<ServerHandProvider>();
@@ -84,24 +100,27 @@ namespace HandMesh.DepthRefinement
 
             // Subscribe to every provider present; ActiveJoints() picks the enabled one per
             // frame, so mode switches (HandPoseModeController) need no re-subscribing.
+            if (_fastvit != null) _fastvit.OnPose += HandlePose;
             if (_hybrid != null) _hybrid.OnPose += HandlePose;
             if (_dual != null) _dual.OnPose += HandlePose;
             if (_server != null) _server.OnPose += HandlePose;
-            if (_hybrid == null && _dual == null && _server == null)
+            if (_fastvit == null && _hybrid == null && _dual == null && _server == null)
                 Debug.LogWarning("[HandGrab] no hand pose provider found in the scene.");
         }
 
         void OnDestroy()
         {
+            if (_fastvit != null) _fastvit.OnPose -= HandlePose;
             if (_hybrid != null) _hybrid.OnPose -= HandlePose;
             if (_dual != null) _dual.OnPose -= HandlePose;
             if (_server != null) _server.OnPose -= HandlePose;
         }
 
-        // Source priority: server (while enabled) > hybrid B > dual-stream.
+        // Source priority: server (while enabled) > fastvit > hybrid B > dual-stream.
         Vector3[] ActiveJoints()
         {
             if (_server != null && _server.isActiveAndEnabled && _server.HasPose) return _server.AbsJoints;
+            if (_fastvit != null && _fastvit.isActiveAndEnabled && _fastvit.HasPose) return _fastvit.AbsJoints;
             if (_hybrid != null && _hybrid.isActiveAndEnabled && _hybrid.HasPose) return _hybrid.AbsJoints;
             if (_dual != null && _dual.isActiveAndEnabled && _dual.HasPose) return _dual.AbsJoints;
             return null;
@@ -150,6 +169,8 @@ namespace HandMesh.DepthRefinement
             {
                 _pinch = _prevPinch = rawPinch;
                 _handRot = _prevHandRot = rawRot;
+                _pinchDistSm = pinchDist;
+                _openSince = -1f;
                 _smoothInit = true;
             }
             else
@@ -172,18 +193,32 @@ namespace HandMesh.DepthRefinement
                     _angVelocity = Vector3.Lerp(_angVelocity, axis * (ang * Mathf.Deg2Rad / dt), 0.5f);
             }
 
-            if (!_pinching && pinchDist < _grabDist)
+            _pinchDistSm = _pinchDistSm < 0f ? pinchDist : Mathf.Lerp(_pinchDistSm, pinchDist, 0.5f);
+            if (!_pinching && _pinchDistSm < _grabDist)
             {
                 _pinching = true;
+                _openSince = -1f;
                 TryGrab();
             }
-            else if (_pinching && pinchDist > _releaseDist)
+            else if (_pinching)
             {
-                _pinching = false;
-                if (_held != null)
+                // release ONLY when the hand is clearly open AND stays open: smoothed distance
+                // past the hysteresis threshold, index extended, held for _releaseHoldSec.
+                bool open = _pinchDistSm > _releaseDist &&
+                    (!_requireOpenHand ||
+                     Vector3.Distance(wrist, index) >
+                     _openExtendRatio * Mathf.Max(1e-5f, Vector3.Distance(wrist, indexMcp)));
+                if (!open) _openSince = -1f;
+                else if (_openSince < 0f) _openSince = now;
+                else if (now - _openSince >= _releaseHoldSec)
                 {
-                    _held.OnRelease(_velocity, _angVelocity);
-                    _held = null;
+                    _pinching = false;
+                    _openSince = -1f;
+                    if (_held != null)
+                    {
+                        _held.OnRelease(_velocity, _angVelocity);
+                        _held = null;
+                    }
                 }
             }
 

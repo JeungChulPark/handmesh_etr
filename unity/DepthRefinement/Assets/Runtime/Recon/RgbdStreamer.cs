@@ -52,6 +52,12 @@ namespace HandMesh.DepthRefinement
         [Header("Server (PC running infer_ipad_stream.py)")]
         [SerializeField] string _host = "192.168.0.10";
         [SerializeField] int _port = 9776;
+        [Tooltip("When the configured host cannot be reached, probe the LAN for the server "
+               + "(UDP unicast sweep, ServerDiscovery.cs) and connect to whoever answers. "
+               + "Survives DHCP moving the PC to a new address — no rebuild needed.")]
+        [SerializeField] bool _autoDiscover = true;
+        [Tooltip("UDP port of the server's discovery responder (infer_ipad_stream.py --discovery-port).")]
+        [SerializeField] int _discoveryPort = ServerDiscovery.DefaultDiscoveryPort;
 
         [Header("Stream")]
         [Tooltip("Frames per second to capture & send. 30 keeps up with the server "
@@ -88,7 +94,7 @@ namespace HandMesh.DepthRefinement
         /// <summary>One-line status for a debug UI label.</summary>
         public string Status =>
             $"{(IsStreaming ? (_remoteSend ? "streaming" : "paused (server)") : "stopped")} " +
-            $"{(_connected ? $"-> {_host}:{_port}" : "(disconnected)")}  " +
+            $"{(_connected ? $"-> {_autoHost ?? _host}:{(_autoHost != null && _autoPort > 0 ? _autoPort : _port)}" : "(disconnected)")}  " +
             $"sent {SentCount}  dropped {DroppedCount}";
 
         sealed class FrameJob
@@ -115,6 +121,8 @@ namespace HandMesh.DepthRefinement
         volatile bool _componentActive;     // mirrors enabled for the worker thread
         bool _lastRemoteSend = true;        // main-thread copy, for OnRemoteCommand edges
         int _lastConnectAttemptMs = int.MinValue;
+        volatile string _autoHost;          // discovered server address (worker thread writes)
+        volatile int _autoPort;             // discovered TCP port (0 = use _port)
 
         NativeArray<byte> _rgba;     // converted RGBA scratch (sensor), main thread only
         ushort[] _depthMm;           // millimeter scratch, main thread only
@@ -155,8 +163,14 @@ namespace HandMesh.DepthRefinement
         public void StopStreaming() { IsStreaming = false; }
         public void ToggleStreaming() { if (IsStreaming) StopStreaming(); else StartStreaming(); }
 
-        /// <summary>Change the server address at runtime (e.g. from an input field).</summary>
-        public void SetHost(string host) { if (!string.IsNullOrWhiteSpace(host)) _host = host.Trim(); }
+        /// <summary>Change the server address at runtime (e.g. from an input field).
+        /// Clears any auto-discovered address — the manual value wins.</summary>
+        public void SetHost(string host)
+        {
+            if (string.IsNullOrWhiteSpace(host)) return;
+            _host = host.Trim();
+            _autoHost = null; _autoPort = 0;
+        }
 
         // ---- capture (main thread) --------------------------------------------------------
 
@@ -392,24 +406,43 @@ namespace HandMesh.DepthRefinement
             // retry at most every 2 s (Environment.TickCount: worker thread can't use Time.time)
             if (unchecked(Environment.TickCount - _lastConnectAttemptMs) < 2000) return false;
             _lastConnectAttemptMs = Environment.TickCount;
+            string host = _autoHost ?? _host;
+            int port = _autoHost != null && _autoPort > 0 ? _autoPort : _port;
             try
             {
                 CloseClient();
                 var c = new TcpClient { NoDelay = true, SendTimeout = 3000 };
-                IAsyncResult ar = c.BeginConnect(_host, _port, null, null);
-                if (!ar.AsyncWaitHandle.WaitOne(1500)) { c.Close(); return false; }
+                IAsyncResult ar = c.BeginConnect(host, port, null, null);
+                if (!ar.AsyncWaitHandle.WaitOne(1500)) { c.Close(); return Rediscover(host); }
                 c.EndConnect(ar);
                 _client = c;
                 _stream = c.GetStream();
                 _connected = true;
-                Debug.Log($"[RgbdStreamer] connected to {_host}:{_port}");
+                Debug.Log($"[RgbdStreamer] connected to {host}:{port}");
                 return true;
             }
             catch (Exception)
             {
                 _connected = false;
-                return false;
+                return Rediscover(host);
             }
+        }
+
+        // Connect failed: probe the LAN for the server (worker thread; blocking is fine).
+        // Returns false always — the next worker tick retries with the discovered address.
+        bool Rediscover(string failedHost)
+        {
+            if (!_autoDiscover) return false;
+            ServerDiscovery.Result? found = ServerDiscovery.FindServer(_discoveryPort, 1500);
+            if (found is not { } f) return false;
+            _autoHost = f.Host;
+            _autoPort = f.TcpPort;
+            if (f.Host != failedHost)
+            {
+                Debug.Log($"[RgbdStreamer] discovered server at {f.Host}:{(f.TcpPort > 0 ? f.TcpPort : _port)} — switching");
+                _lastConnectAttemptMs = Environment.TickCount - 2000;   // retry immediately
+            }
+            return false;
         }
 
         void CloseClient()

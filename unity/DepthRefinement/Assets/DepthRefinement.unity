@@ -1409,6 +1409,7 @@ GameObject:
   - component: {fileID: 674439915}
   - component: {fileID: 674439914}
   - component: {fileID: 674439916}
+  - component: {fileID: 674439917}
   m_Layer: 0
   m_Name: RGBViewer
   m_TagString: Untagged
@@ -1479,6 +1480,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: HandMesh.DepthRefinement.Runtime::HandMesh.DepthRefinement.HandSphereDriver
   _provider: {fileID: 674439915}
+  _fastvitProvider: {fileID: 0}
   _hybridProvider: {fileID: 674439916}
   _serverProvider: {fileID: 0}
   _cameraTransform: {fileID: 1591390000}
@@ -1518,7 +1520,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 674439908}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 95b0e47f1e59b77b1b32130364b10441, type: 3}
   m_Name: 
@@ -1526,6 +1528,22 @@ MonoBehaviour:
   _crop: {fileID: 674439915}
   _landmarks: {fileID: 1355108724}
   _modelAsset: {fileID: 5022602860645237092, guid: 6b478dd74a5d8d6829df728ba1bbd894, type: 3}
+  _backend: 256
+--- !u!114 &674439917
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 674439908}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 361dce0b39984311bfa8f7977d552cf9, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: HandMesh.DepthRefinement.Runtime::HandMesh.DepthRefinement.HybridFastVitHandProvider
+  _crop: {fileID: 674439915}
+  _landmarks: {fileID: 1355108724}
+  _modelAsset: {fileID: 5022602860645237092, guid: 13788df8bf874711afb33c96a056e030, type: 3}
   _backend: 256
 --- !u!1 &697081992
 GameObject:
@@ -3553,12 +3571,13 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a35dad9d542f4ca5bb2041b540b98bb3, type: 3}
   m_Name: 
   m_EditorClassIdentifier: HandMesh.DepthRefinement.Runtime::HandMesh.DepthRefinement.HandGrabController
+  _fastvit: {fileID: 0}
   _hybrid: {fileID: 674439916}
   _dual: {fileID: 674439915}
   _server: {fileID: 1791124667}
   _cameraTransform: {fileID: 1591390000}
   _grabDist: 0.035
-  _releaseDist: 0.055
+  _releaseDist: 0.06
   _grabRadius: 0.1
   _smoothing: 0.4
   _lostPoseReleaseSec: 0.4
@@ -4332,6 +4351,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: HandMesh.DepthRefinement.Runtime::HandMesh.DepthRefinement.HandPoseModeController
   _mode: 1
   _remoteModeSwitch: 1
+  _fastvit: {fileID: 0}
   _hybrid: {fileID: 0}
   _dual: {fileID: 0}
   _streamer: {fileID: 0}
@@ -4364,7 +4384,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: HandMesh.DepthRefinement.Runtime::HandMesh.DepthRefinement.RgbdStreamer
   _cameraManager: {fileID: 1591390003}
   _occlusionManager: {fileID: 1591390006}
-  _host: 192.168.219.113
+  _host: 192.168.219.112
   _port: 9776
   _streamFps: 30
   _rgbMaxSize: 640

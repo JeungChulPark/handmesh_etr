@@ -28,6 +28,9 @@ namespace HandMesh.DepthRefinement
         };
 
         [SerializeField] DualStreamHandProvider _provider;
+        [Tooltip("Optional: FastViT hybrid lifter (hybrid_fastvit.onnx, deploy best). Takes priority " +
+                 "over model B and the dual-stream provider while enabled.")]
+        [SerializeField] HybridFastVitHandProvider _fastvitProvider;
         [Tooltip("Optional: if assigned, drive the spheres/bones from model B (HybridBHandProvider) " +
                  "instead of the dual-stream provider. Leave empty to use the dual-stream provider.")]
         [SerializeField] HybridBHandProvider _hybridProvider;
@@ -120,6 +123,8 @@ namespace HandMesh.DepthRefinement
         {
             if (_serverProvider != null && _serverProvider.isActiveAndEnabled)
             { joints = _serverProvider.AbsJoints; return _serverProvider.HasPose; }
+            if (_fastvitProvider != null && _fastvitProvider.isActiveAndEnabled)
+            { joints = _fastvitProvider.AbsJoints; return _fastvitProvider.HasPose; }
             if (_hybridProvider != null && _hybridProvider.isActiveAndEnabled)
             { joints = _hybridProvider.AbsJoints; return _hybridProvider.HasPose; }
             if (_provider != null && _provider.isActiveAndEnabled)
@@ -132,7 +137,7 @@ namespace HandMesh.DepthRefinement
         void LateUpdate()
         {
             EnsureBound();
-            // Source priority: server (while enabled) > model B > dual-stream.
+            // Source priority: server (while enabled) > FastViT hybrid > model B > dual-stream.
             bool hasPose = TryGetPose(out Vector3[] j);
             bool show = _cameraTransform != null && _joints != null && hasPose;
             if (!show)

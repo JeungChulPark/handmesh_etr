@@ -35,6 +35,9 @@ PC가 hybrid lifter(FastViT-SA12 replay_ft)로 추론해서 보여주는 파이�
 
 1. 아무 GameObject에 **`RgbdStreamer`** 추가
    - `Host` = 서버 PC의 IP (예: `192.168.0.10`), `Port` = 9776
+   - **`Auto Discover` (기본 ON)** — `Host`로 접속이 안 되면 LAN을 스캔해 서버를
+     자동으로 찾아 연결한다(아래 "서버 자동 탐색"). DHCP로 PC IP가 바뀌어도
+     재빌드가 필요 없으므로 `Host`는 초기 힌트일 뿐이다.
    - `Stream Fps` 15, `Rgb Max Size` 640, `Jpg Quality` 80 (기본값이면 ~2.4MB/s)
    - `Auto Start`는 켜두면 Server 모드 진입 시 자동 시작
 2. 같은 곳에 **`ServerHandProvider`** 추가 (`Port` 9751)
@@ -53,6 +56,20 @@ PC가 hybrid lifter(FastViT-SA12 replay_ft)로 추론해서 보여주는 파이�
   (rotK 보정해 upright로 회전 — 서버가 rotate_frame 후 보는 그림과 동일).
   아무 GameObject에 추가만 하면 좌하단에 자동 생성되고, 기존 Canvas의 RawImage를
   `Target`에 할당하면 그 자리에 그린다. 전송 중이 아닐 때는 자동으로 숨는다.
+
+## 서버 자동 탐색 (Auto Discover)
+
+PC IP가 DHCP로 바뀌면 씬에 구운 `Host`가 낡아 접속이 실패한다. 이를 위해:
+
+- **서버**: `infer_ipad_stream.py`가 `udp://0.0.0.0:9777`에서 디스커버리 프로브에
+  응답한다 (`"HANDMESH_DISCOVER?"` → `"HANDMESH_SERVER <tcp_port>"`,
+  `--discovery-port`로 변경, `0`=끄기).
+- **앱**: `ServerDiscovery.cs` — TCP 접속 실패 시 자기 서브넷(/24) 전 호스트에
+  **unicast** 프로브를 뿌리고(≤254 datagram, 수 ms), 응답한 주소로 즉시 재접속.
+  브로드캐스트/멀티캐스트가 아닌 unicast 스윕이라 iOS multicast entitlement가
+  필요 없다 (기존 로컬 네트워크 권한 프롬프트만으로 동작).
+- 수동 `SetHost()` 호출은 자동 탐색 결과를 덮어쓴다(수동 값 우선).
+- 탐색 성공 시 `Status` 라벨에 실제 연결 주소가 표시된다.
 
 ## 실행 (Server 모드)
 

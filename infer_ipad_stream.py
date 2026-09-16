@@ -43,6 +43,7 @@ Examples
 """
 import os
 import json
+import math
 import time
 import socket
 import struct
@@ -64,6 +65,43 @@ HDR_FMT = "<8I4f3Id"
 HDR_SIZE = struct.calcsize(HDR_FMT)   # 68 bytes
 POSE_FMT = "<7fI"                     # v2 extension: cam pos xyz, quat xyzw, poseOk
 POSE_SIZE = struct.calcsize(POSE_FMT)  # 32 bytes
+
+
+DISCOVERY_PORT = 9777
+DISCOVERY_PROBE = b"HANDMESH_DISCOVER?"
+DISCOVERY_REPLY = b"HANDMESH_SERVER"     # reply: b"HANDMESH_SERVER <tcp_port>"
+
+
+def start_discovery_responder(tcp_port, disc_port=DISCOVERY_PORT):
+    """LAN auto-discovery: the Unity app (ServerDiscovery.cs) unicast-sweeps its /24
+    with DISCOVERY_PROBE datagrams; we answer with our TCP port and the app connects
+    to whichever address replied. Unicast (not broadcast/multicast) keeps iOS happy —
+    no com.apple.developer.networking.multicast entitlement needed on the client."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("0.0.0.0", disc_port))
+    except OSError as e:
+        print(f"[ipad] discovery responder OFF (udp:{disc_port} busy: {e})", flush=True)
+        return None
+    reply = DISCOVERY_REPLY + b" " + str(tcp_port).encode()
+
+    def _run():
+        while True:
+            try:
+                data, addr = sock.recvfrom(64)
+            except OSError:
+                return                        # socket closed on shutdown
+            if data.strip() == DISCOVERY_PROBE:
+                try:
+                    sock.sendto(reply, addr)
+                except OSError:
+                    pass
+
+    threading.Thread(target=_run, daemon=True, name="discovery").start()
+    print(f"[ipad] discovery responder on udp://0.0.0.0:{disc_port} "
+          f"(probe={DISCOVERY_PROBE.decode()})", flush=True)
+    return sock
 
 
 def recv_exact(conn, n):
@@ -262,6 +300,10 @@ def main():
     ap.add_argument("--autostart", action="store_true",
                     help="start with streaming ENABLED (GUI default: paused until the "
                          "START button / space is pressed; headless default: enabled)")
+    ap.add_argument("--discovery-port", dest="discovery_port", type=int,
+                    default=DISCOVERY_PORT,
+                    help="UDP port answering the app's LAN auto-discovery probes "
+                         f"(default {DISCOVERY_PORT}; 0 = off)")
     ap.add_argument("--selftest", action="store_true",
                     help="loopback wiring test: no iPad, no GUI, exits after a few frames")
     args = ap.parse_args()
@@ -282,6 +324,8 @@ def main():
     # GUI: wait for the START button. Headless: no button, so stream immediately.
     start_enabled = args.autostart or not args.gui
     src = IPadSource(host, int(port), start_enabled=start_enabled)
+    if args.discovery_port > 0:
+        start_discovery_responder(int(port), args.discovery_port)
 
     ui = {"btn": None, "quit_btn": None, "quit": False}
 
@@ -397,6 +441,9 @@ def main():
                 cp, cq = pose      # desktop Unity camera keeps tracking even without a hand
                 pkt["cp"] = [round(v, 5) for v in cp]
                 pkt["cq"] = [round(v, 6) for v in cq]
+            # vertical FOV of the upright frame — the desktop camera must match it, or
+            # world-locked virtual objects slide against the video during device motion
+            pkt["fov"] = round(math.degrees(2 * math.atan(bgr.shape[0] / (2 * float(K[1, 1])))), 2)
             data = json.dumps(pkt).encode()
             if udp_fixed is not None:
                 sock.sendto(data, udp_fixed)

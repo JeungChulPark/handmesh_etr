@@ -23,6 +23,8 @@ namespace HandMesh.DepthRefinement
 
         [Header("Object to manipulate")]
         [SerializeField] Transform _target;
+        [Tooltip("Optional: FastViT hybrid pose gate (takes priority over model B while enabled).")]
+        [SerializeField] HybridFastVitHandProvider _fastvitProvider;
         [Tooltip("Optional: only grab while this provider reports a valid pose this frame.")]
         [SerializeField] HybridBHandProvider _provider;
         [Tooltip("Optional: SERVER-mode pose gate (joints inferred on the PC). Used while it " +
@@ -34,6 +36,9 @@ namespace HandMesh.DepthRefinement
         [SerializeField] float _grabDist = 0.035f;
         [Tooltip("Pinch is OPEN (release) when tip distance > this. Hysteresis avoids flicker.")]
         [SerializeField] float _releaseDist = 0.06f;
+        [Tooltip("The open pose must persist this long before releasing (s) — a single noisy "
+               + "frame no longer drops the object.")]
+        [SerializeField] float _releaseHoldSec = 0.12f;
         [Tooltip("Smoothing for the object's follow motion (0 = snap, 0.9 = very smooth).")]
         [Range(0f, 0.95f)] [SerializeField] float _smoothing = 0.5f;
 
@@ -42,6 +47,8 @@ namespace HandMesh.DepthRefinement
         [SerializeField] Color _grabColor = new Color(0.2f, 1f, 0.3f);
 
         bool _grabbed;
+        float _distSm = -1f;            // EMA of the tip distance (spike filter)
+        float _openSince = -1f;         // Time.time when the open pose began, -1 = not open
         Renderer _targetRenderer;
         MaterialPropertyBlock _mpb;
 
@@ -58,13 +65,23 @@ namespace HandMesh.DepthRefinement
             // no hand this frame -> don't act (gate on whichever pose source is enabled)
             if (_serverProvider != null && _serverProvider.isActiveAndEnabled)
             { if (!_serverProvider.HasPose) return; }
+            else if (_fastvitProvider != null && _fastvitProvider.isActiveAndEnabled)
+            { if (!_fastvitProvider.HasPose) return; }
             else if (_provider != null && _provider.isActiveAndEnabled && !_provider.HasPose) return;
 
             float d = Vector3.Distance(_thumbTip.position, _indexTip.position);
             Vector3 pinch = 0.5f * (_thumbTip.position + _indexTip.position);
+            _distSm = _distSm < 0f ? d : Mathf.Lerp(_distSm, d, 0.5f);
 
-            if (!_grabbed && d < _grabDist) { _grabbed = true; SetColor(_grabColor); }
-            else if (_grabbed && d > _releaseDist) { _grabbed = false; SetColor(_idleColor); }
+            if (!_grabbed && _distSm < _grabDist) { _grabbed = true; _openSince = -1f; SetColor(_grabColor); }
+            else if (_grabbed)
+            {
+                // release only when the open pose PERSISTS — noise spikes reset the timer
+                if (_distSm <= _releaseDist) _openSince = -1f;
+                else if (_openSince < 0f) _openSince = Time.time;
+                else if (Time.time - _openSince >= _releaseHoldSec)
+                { _grabbed = false; _openSince = -1f; SetColor(_idleColor); }
+            }
 
             if (_grabbed)
             {

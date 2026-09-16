@@ -66,8 +66,16 @@ namespace HandMesh.HandGrab
             }
 
             transform.SetPositionAndRotation(_pos, _rot);
-            if (driveMainCamera && Camera.main != null && Camera.main.transform != transform)
-                Camera.main.transform.SetPositionAndRotation(_pos, _rot);
+            if (driveMainCamera && Camera.main != null)
+            {
+                if (Camera.main.transform != transform)
+                    Camera.main.transform.SetPositionAndRotation(_pos, _rot);
+                // match the device camera's vertical FOV — with the default 60° the virtual
+                // objects pan at a different rate than the video and appear to slide/move
+                float fov = receiver.DeviceFovDeg;
+                if (fov > 1f && Mathf.Abs(Camera.main.fieldOfView - fov) > 0.01f)
+                    Camera.main.fieldOfView = fov;
+            }
         }
     }
 }

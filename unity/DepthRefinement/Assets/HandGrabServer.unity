@@ -150,10 +150,11 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::HandMesh.HandGrab.HandGrabDemo
   udpPort: 9750
   mirrorX: 1
-  objectDistance: 0.45
+  objectDistance: 0.32
   objectHeight: 0.05
   showVideo: 1
   videoPort: 9760
+  followDeviceCamera: 1
 --- !u!4 &705757563
 Transform:
   m_ObjectHideFlags: 0

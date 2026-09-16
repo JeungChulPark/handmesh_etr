@@ -30,6 +30,7 @@ namespace HandMesh.DepthRefinement
         [SerializeField] bool _remoteModeSwitch = true;
 
         [Header("On-device components (auto-found when empty)")]
+        [SerializeField] HybridFastVitHandProvider _fastvit;
         [SerializeField] HybridBHandProvider _hybrid;
         [SerializeField] DualStreamHandProvider _dual;
 
@@ -43,15 +44,17 @@ namespace HandMesh.DepthRefinement
             ? $"SERVER  {(_streamer != null ? _streamer.Status : "no RgbdStreamer in scene")}"
             : "ON-DEVICE (Sentis)";
 
-        bool _hybridSceneEnabled, _dualSceneEnabled;   // scene-authored states, restored on OnDevice
+        bool _fastvitSceneEnabled, _hybridSceneEnabled, _dualSceneEnabled;   // scene-authored states, restored on OnDevice
 
         void Awake()
         {
+            if (_fastvit == null) _fastvit = FindFirstObjectByType<HybridFastVitHandProvider>(FindObjectsInactive.Include);
             if (_hybrid == null) _hybrid = FindFirstObjectByType<HybridBHandProvider>(FindObjectsInactive.Include);
             if (_dual == null) _dual = FindFirstObjectByType<DualStreamHandProvider>(FindObjectsInactive.Include);
             if (_streamer == null) _streamer = FindFirstObjectByType<RgbdStreamer>(FindObjectsInactive.Include);
             if (_server == null) _server = FindFirstObjectByType<ServerHandProvider>(FindObjectsInactive.Include);
 
+            _fastvitSceneEnabled = _fastvit != null && _fastvit.enabled;
             _hybridSceneEnabled = _hybrid != null && _hybrid.enabled;
             _dualSceneEnabled = _dual != null && _dual.enabled;
 
@@ -92,6 +95,7 @@ namespace HandMesh.DepthRefinement
         void Apply()
         {
             bool onDevice = _mode == InferenceMode.OnDevice;
+            if (_fastvit != null) _fastvit.enabled = onDevice && _fastvitSceneEnabled;
             if (_hybrid != null) _hybrid.enabled = onDevice && _hybridSceneEnabled;
             if (_dual != null) _dual.enabled = onDevice && _dualSceneEnabled;
             if (_server != null) _server.enabled = !onDevice;

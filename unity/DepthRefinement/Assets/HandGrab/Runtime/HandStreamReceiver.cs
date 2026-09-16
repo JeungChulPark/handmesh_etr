@@ -49,6 +49,9 @@ namespace HandMesh.HandGrab
         /// <summary>Streamed ARKit camera pose, Unity world space (v2 iPad stream).</summary>
         public Vector3 CameraPosition { get; private set; }
         public Quaternion CameraRotation { get; private set; } = Quaternion.identity;
+        /// <summary>Device camera vertical FOV (deg) of the streamed upright frame, 0 = unknown.
+        /// The desktop camera must adopt it or virtual objects slide against the video.</summary>
+        public float DeviceFovDeg { get; private set; }
 
         [Serializable]
         class Packet
@@ -59,6 +62,7 @@ namespace HandMesh.HandGrab
             public float[] j;
             public float[] cp;   // device camera world position [x,y,z] (optional)
             public float[] cq;   // device camera rotation quaternion [x,y,z,w] (optional)
+            public float fov;    // device camera vertical FOV, degrees (optional, 0 = absent)
         }
 
         UdpClient _udp;
@@ -67,6 +71,7 @@ namespace HandMesh.HandGrab
         readonly object _lock = new object();
         float[] _latest;                 // raw 63 floats, camera frame
         float[] _latestCp, _latestCq;    // raw device camera pose, or null
+        float _latestFov;                // device vertical FOV (deg), 0 = not received
         double _latestT;
         float _latestFps;
         float _lastDetTime = -999f;
@@ -117,6 +122,7 @@ namespace HandMesh.HandGrab
                             _latestCp = pkt.cp;
                             _latestCq = pkt.cq;
                         }
+                        if (pkt.fov > 1f) _latestFov = pkt.fov;
                     }
                 }
                 catch (SocketException) { /* timeout / closed — keep polling */ }
@@ -127,12 +133,14 @@ namespace HandMesh.HandGrab
         void Update()
         {
             float[] raw, cp, cq;
+            float fov;
             double t;
             lock (_lock)
             {
                 raw = _latest;
                 cp = _latestCp;
                 cq = _latestCq;
+                fov = _latestFov;
                 t = _latestT;
                 StreamFps = _latestFps;
             }
@@ -143,6 +151,7 @@ namespace HandMesh.HandGrab
                 CameraRotation = new Quaternion(cq[0], cq[1], cq[2], cq[3]);
                 HasCameraPose = true;
             }
+            if (fov > 1f) DeviceFovDeg = fov;
 
             if (raw != null)
             {

@@ -17,8 +17,9 @@ namespace HandMesh.HandGrab
     {
         public int udpPort = 9750;
         public bool mirrorX = true;
-        [Tooltip("Meters from camera to the object shelf")]
-        public float objectDistance = 0.45f;
+        [Tooltip("Meters from camera to the object shelf — keep within one-handed reach of "
+               + "the device (~0.3 m); at the device FOV (~67°) objects shrink fast with distance")]
+        public float objectDistance = 0.32f;
         [Tooltip("Height (m) of the grabbables relative to the camera axis. The hand tracks " +
                  "around y=0 (camera center), so keep this near 0; objects drop onto the " +
                  "table 5 cm below this height.")]
@@ -30,14 +31,21 @@ namespace HandMesh.HandGrab
         public int videoPort = 9760;
         [Tooltip("World-lock the desktop camera to the iPad's streamed ARKit pose " +
                  "(infer_ipad_stream.py \"cp\"/\"cq\"). Forces mirrorX off; the virtual " +
-                 "camera then moves through the scene exactly like the physical device.")]
-        public bool followDeviceCamera = false;
+                 "camera then moves through the scene exactly like the physical device. " +
+                 "Turn OFF for a fixed desk sensor (ZED) stream, which carries no pose.")]
+        public bool followDeviceCamera = true;
         [Tooltip("Objects hover in place instead of falling: spawned kinematic and kept " +
                  "kinematic after release. Turn off for gravity + toss physics.")]
         public bool floatObjects = true;
         [Tooltip("Guide line + cm label from the pinch point to the nearest grabbable, " +
                  "so you can judge depth on a flat monitor (green = close enough to grab).")]
         public bool showDistanceGuide = true;
+
+        HandStreamReceiver _recv;
+        Transform _table;
+        readonly System.Collections.Generic.List<Transform> _grabbables = new();
+        readonly System.Collections.Generic.List<Vector3> _offsets = new();   // in the shelf frame
+        bool _placedOnPose;
 
         void Start()
         {
@@ -63,7 +71,7 @@ namespace HandMesh.HandGrab
 
             // --- hand rig (receiver + skeleton + grabber share one GameObject) ---
             var hand = new GameObject("HandRig");
-            var recv = hand.AddComponent<HandStreamReceiver>();
+            var recv = _recv = hand.AddComponent<HandStreamReceiver>();
             recv.port = udpPort;
             recv.mirrorX = mirrorX;
             hand.AddComponent<HandSkeleton>();
@@ -90,14 +98,62 @@ namespace HandMesh.HandGrab
             table.transform.position = new Vector3(0, objectHeight - 0.05f, objectDistance);
             table.transform.localScale = new Vector3(1.2f, 0.02f, 0.8f);
             table.GetComponent<MeshRenderer>().material.color = new Color(0.25f, 0.28f, 0.32f);
+            _table = table.transform;
 
             // --- grabbables (floating, or dropping a few cm onto the table) ---
             Spawn(PrimitiveType.Sphere, new Vector3(-0.12f, objectHeight, objectDistance),
-                  0.06f, new Color(0.85f, 0.35f, 0.3f));
+                  0.08f, new Color(0.85f, 0.35f, 0.3f));
             Spawn(PrimitiveType.Cube, new Vector3(0.05f, objectHeight, objectDistance),
-                  0.06f, new Color(0.3f, 0.55f, 0.85f));
+                  0.08f, new Color(0.3f, 0.55f, 0.85f));
             Spawn(PrimitiveType.Capsule, new Vector3(0.2f, objectHeight + 0.02f, objectDistance),
-                  0.05f, new Color(0.4f, 0.8f, 0.45f));
+                  0.07f, new Color(0.4f, 0.8f, 0.45f));
+        }
+
+        // With a world-locked camera the ARKit world origin is wherever the AR session
+        // STARTED — the fixed spawn spot can be behind the user or across the room. So:
+        //   * on the FIRST streamed pose, move the shelf in front of the current camera;
+        //   * R re-centers it any time (device drifted / objects thrown out of reach).
+        void LateUpdate()
+        {
+            if (followDeviceCamera && !_placedOnPose && _recv != null && _recv.HasCameraPose)
+            {
+                _placedOnPose = true;
+                Recenter();
+            }
+            if (Input.GetKeyDown(KeyCode.R)) Recenter();
+        }
+
+        /// <summary>Place the table + grabbables `objectDistance` in front of the current
+        /// camera (gravity-aligned: the shelf stays level whatever the device tilt).</summary>
+        public void Recenter()
+        {
+            var cam = Camera.main;
+            if (cam == null) return;
+            Vector3 fwd = cam.transform.forward; fwd.y = 0f;
+            fwd = fwd.sqrMagnitude < 1e-4f ? Vector3.forward : fwd.normalized;
+            Quaternion yaw = Quaternion.LookRotation(fwd);
+            Vector3 anchor = cam.transform.position + fwd * objectDistance
+                             + Vector3.up * objectHeight;
+
+            if (_table != null)
+                _table.SetPositionAndRotation(anchor - Vector3.up * 0.05f, yaw);
+            for (int i = 0; i < _grabbables.Count; i++)
+            {
+                Transform g = _grabbables[i];
+                if (g == null) continue;
+                var rb = g.GetComponent<Rigidbody>();
+                if (rb != null && !rb.isKinematic)
+                {
+#if UNITY_6000_0_OR_NEWER
+                    rb.linearVelocity = Vector3.zero;
+#else
+                    rb.velocity = Vector3.zero;
+#endif
+                    rb.angularVelocity = Vector3.zero;
+                }
+                g.SetPositionAndRotation(anchor + yaw * _offsets[i], yaw);
+            }
+            Debug.Log($"[HandGrabDemo] shelf re-centered {objectDistance:0.00} m in front of the camera");
         }
 
         void Spawn(PrimitiveType type, Vector3 pos, float size, Color color)
@@ -112,6 +168,8 @@ namespace HandMesh.HandGrab
             rb.interpolation = RigidbodyInterpolation.Interpolate;
             rb.isKinematic = floatObjects;   // float mode: hover at the spawn point too
             go.AddComponent<Grabbable>().floatOnRelease = floatObjects;
+            _grabbables.Add(go.transform);
+            _offsets.Add(new Vector3(pos.x, pos.y - objectHeight, 0f));  // shelf-frame offset
         }
     }
 }
