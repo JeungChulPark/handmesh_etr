@@ -40,6 +40,12 @@ namespace HandMesh.HandGrab
         [Tooltip("Guide line + cm label from the pinch point to the nearest grabbable, " +
                  "so you can judge depth on a flat monitor (green = close enough to grab).")]
         public bool showDistanceGuide = true;
+        [Tooltip("Grey table slab under the objects. Off by default — floating objects need " +
+                 "no support and the slab looked out of place over the video background.")]
+        public bool showTable = false;
+        [Tooltip("Record the Game view to <project>/Recordings/*.mp4 while playing " +
+                 "(GameViewRecorder; needs ffmpeg — brew install ffmpeg)")]
+        public bool recordGameView = true;
 
         HandStreamReceiver _recv;
         Transform _table;
@@ -92,13 +98,19 @@ namespace HandMesh.HandGrab
                 video.mirrorX = mirrorX;   // video must mirror the same way as the hand
             }
 
-            // --- table so released objects land somewhere (just below the shelf height) ---
-            var table = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            table.name = "Table";
-            table.transform.position = new Vector3(0, objectHeight - 0.05f, objectDistance);
-            table.transform.localScale = new Vector3(1.2f, 0.02f, 0.8f);
-            table.GetComponent<MeshRenderer>().material.color = new Color(0.25f, 0.28f, 0.32f);
-            _table = table.transform;
+            // --- optional table so released objects land somewhere (just below the shelf) ---
+            if (showTable)
+            {
+                var table = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                table.name = "Table";
+                table.transform.position = new Vector3(0, objectHeight - 0.05f, objectDistance);
+                table.transform.localScale = new Vector3(1.2f, 0.02f, 0.8f);
+                table.GetComponent<MeshRenderer>().material.color = new Color(0.25f, 0.28f, 0.32f);
+                _table = table.transform;
+            }
+
+            if (recordGameView && GetComponent<GameViewRecorder>() == null)
+                gameObject.AddComponent<GameViewRecorder>();
 
             // --- grabbables (floating, or dropping a few cm onto the table) ---
             Spawn(PrimitiveType.Sphere, new Vector3(-0.12f, objectHeight, objectDistance),

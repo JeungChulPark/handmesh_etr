@@ -356,3 +356,6 @@ unity/DepthRefinement/Logs/
 *.xcarchive/
 *.ipa
 DerivedData/
+
+# Game view recordings (GameViewRecorder)
+unity/DepthRefinement/Recordings/

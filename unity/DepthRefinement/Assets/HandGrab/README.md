@@ -59,6 +59,20 @@ python unity_stream_hand.py --udp <unity-pc-ip>:9750
 | **돌리기** | 핀치 유지한 채 손목 비틀기 (손바닥 프레임 회전이 그대로 적용) |
 | 놓기/던지기 | 핀치 풀기 — 놓는 순간 손 속도가 오브젝트에 전달됨 |
 
+## 녹화 · 거리 표시
+
+- **Game 창 자동 녹화** (`GameViewRecorder`, `HandGrabDemo.recordGameView` 기본 on) —
+  Play를 누르는 순간부터 멈출 때까지 `unity/DepthRefinement/Recordings/HandGrab_<날짜_시각>.mp4`로
+  저장. 영상 배경·손·오브젝트·거리 숫자까지 화면 그대로 담기고, 좌상단 `● REC mm:ss.cc f=N`
+  스탬프로 문제 구간을 시간으로 찾을 수 있다. 실제 시간 기준 CFR(기본 30fps)이라 재생 속도 = 실제 속도.
+  - **ffmpeg 필요**: `brew install ffmpeg` (없으면 `*_frames/` JPEG 시퀀스로 대신 저장)
+  - 영상이 위아래 뒤집혀 나오면 `GameViewRecorder.verticalFlip`을 On/Off로 바꿀 것
+  - Play 중 Game 창 크기를 바꾸면 새 파일로 이어서 저장
+- **바닥(Table) 제거** — `HandGrabDemo.showTable` 기본 off (오브젝트는 공중에 떠 있음)
+- **부호 있는 거리** (`GrabProximityIndicator.signedByDepth` 기본 on) — 카메라 시선 방향 기준으로
+  손(핀치)이 오브젝트 중심보다 **카메라 쪽이면 `+`**, **오브젝트를 넘어가면 `−`**.
+  두 번째 줄 `depth ±x cm`는 오브젝트 중심과 손의 깊이 차이 자체 (0 = 같은 깊이).
+
 ## 튜닝 포인트
 
 - `HandStreamReceiver.mirrorX` — 전면 카메라면 켜두는 게 자연스러움 (기본 on)

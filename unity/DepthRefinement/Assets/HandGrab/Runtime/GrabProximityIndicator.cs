@@ -31,6 +31,10 @@ namespace HandMesh.HandGrab
         public float boxPadding = 1.08f;
         [Tooltip("Show the distance text label (cm) on the nearest grabbable")]
         public bool showLabel = true;
+        [Tooltip("Sign the label by depth along the camera's view direction: + while the pinch " +
+                 "is on the camera side of the object's centre, − once it has passed beyond it. " +
+                 "A second line shows that depth offset itself.")]
+        public bool signedByDepth = true;
 
         [Tooltip("Box colour when the object can be grabbed RIGHT NOW (pinch would take it)")]
         public Color grabbableColor = new Color(0.25f, 0.95f, 0.35f);
@@ -62,6 +66,7 @@ namespace HandMesh.HandGrab
         readonly List<Grabbable> _stale = new();
 
         float _dist = -1f;              // nearest-object distance, <0 = no label this frame
+        float _depth;                   // object-centre depth − pinch depth (m, camera forward)
         Vector3 _labelWorld;
         GUIStyle _style;
 
@@ -194,6 +199,8 @@ namespace HandMesh.HandGrab
             if (guideOn)
             {
                 _dist = nearestDist;
+                Vector3 fwd = Camera.main != null ? Camera.main.transform.forward : Vector3.forward;
+                _depth = Vector3.Dot(nearest.transform.position - pinch, fwd);
                 _labelWorld = (pinch + nearestPoint) * 0.5f;
                 _guide.SetPosition(0, pinch);
                 _guide.SetPosition(1, nearestPoint);
@@ -218,7 +225,13 @@ namespace HandMesh.HandGrab
                 };
 
             string txt = $"{_dist * 100f:0.0} cm";
-            var rect = new Rect(sp.x - 60, Screen.height - sp.y - 32, 120, 24);
+            if (signedByDepth)
+            {
+                // + = hand still in front of the object (camera side), − = hand went past it
+                char sign = _depth >= 0f ? '+' : '-';
+                txt = $"{sign}{_dist * 100f:0.0} cm\ndepth {sign}{Mathf.Abs(_depth) * 100f:0.0} cm";
+            }
+            var rect = new Rect(sp.x - 70, Screen.height - sp.y - 48, 140, signedByDepth ? 44 : 24);
             _style.normal.textColor = Color.black;      // cheap outline: shadow pass
             GUI.Label(new Rect(rect.x + 1, rect.y + 1, rect.width, rect.height), txt, _style);
             _style.normal.textColor = Color.white;
