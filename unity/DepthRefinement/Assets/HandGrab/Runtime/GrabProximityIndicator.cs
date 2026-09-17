@@ -32,7 +32,8 @@ namespace HandMesh.HandGrab
         [Tooltip("Show the distance text label (cm) on the nearest grabbable")]
         public bool showLabel = true;
         [Tooltip("Sign the label by depth along the camera's view direction: + while the pinch " +
-                 "is on the camera side of the object's centre, − once it has passed beyond it. " +
+                 "is on the far side of the object's centre (user's side for a camera facing the " +
+                 "user), − once it has passed the centre toward the camera. " +
                  "A second line shows that depth offset itself.")]
         public bool signedByDepth = true;
 
@@ -66,7 +67,7 @@ namespace HandMesh.HandGrab
         readonly List<Grabbable> _stale = new();
 
         float _dist = -1f;              // nearest-object distance, <0 = no label this frame
-        float _depth;                   // object-centre depth − pinch depth (m, camera forward)
+        float _depth;                   // pinch depth − object-centre depth (m, camera forward)
         Vector3 _labelWorld;
         GUIStyle _style;
 
@@ -200,7 +201,7 @@ namespace HandMesh.HandGrab
             {
                 _dist = nearestDist;
                 Vector3 fwd = Camera.main != null ? Camera.main.transform.forward : Vector3.forward;
-                _depth = Vector3.Dot(nearest.transform.position - pinch, fwd);
+                _depth = Vector3.Dot(pinch - nearest.transform.position, fwd);
                 _labelWorld = (pinch + nearestPoint) * 0.5f;
                 _guide.SetPosition(0, pinch);
                 _guide.SetPosition(1, nearestPoint);
@@ -227,7 +228,7 @@ namespace HandMesh.HandGrab
             string txt = $"{_dist * 100f:0.0} cm";
             if (signedByDepth)
             {
-                // + = hand still in front of the object (camera side), − = hand went past it
+                // + = hand beyond the object (user side), − = hand passed it toward the camera
                 char sign = _depth >= 0f ? '+' : '-';
                 txt = $"{sign}{_dist * 100f:0.0} cm\ndepth {sign}{Mathf.Abs(_depth) * 100f:0.0} cm";
             }
