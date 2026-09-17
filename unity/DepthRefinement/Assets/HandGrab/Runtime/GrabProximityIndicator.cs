@@ -231,7 +231,8 @@ namespace HandMesh.HandGrab
                 char sign = _depth >= 0f ? '+' : '-';
                 txt = $"{sign}{_dist * 100f:0.0} cm\ndepth {sign}{Mathf.Abs(_depth) * 100f:0.0} cm";
             }
-            var rect = new Rect(sp.x - 70, Screen.height - sp.y - 48, 140, signedByDepth ? 44 : 24);
+            float sx = MirroredCameraView.ScreenX(sp.x);   // label follows the mirrored image
+            var rect = new Rect(sx - 70, Screen.height - sp.y - 48, 140, signedByDepth ? 44 : 24);
             _style.normal.textColor = Color.black;      // cheap outline: shadow pass
             GUI.Label(new Rect(rect.x + 1, rect.y + 1, rect.width, rect.height), txt, _style);
             _style.normal.textColor = Color.white;

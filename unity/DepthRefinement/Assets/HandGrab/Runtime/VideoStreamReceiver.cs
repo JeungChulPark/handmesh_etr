@@ -28,6 +28,8 @@ namespace HandMesh.HandGrab
         public float timeout = 1.0f;
 
         public bool IsReceiving { get; private set; }
+        /// <summary>JPEG frames decoded so far (for the on-screen stream status).</summary>
+        public int FrameCount { get; private set; }
 
         UdpClient _udp;
         Thread _thread;
@@ -93,6 +95,7 @@ namespace HandMesh.HandGrab
                 if (_tex == null) _tex = new Texture2D(2, 2, TextureFormat.RGB24, false);
                 if (_tex.LoadImage(jpeg))                  // decodes JPEG, resizes the texture
                 {
+                    FrameCount++;
                     _image.texture = _tex;
                     if (_fitter != null && _tex.height > 0)
                         _fitter.aspectRatio = (float)_tex.width / _tex.height;

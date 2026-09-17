@@ -50,6 +50,15 @@ namespace HandMesh.HandGrab
         public float objectScale = 0.6f;
         [Tooltip("Centre-to-centre gap (m) of the object row, which is centred on the view")]
         public float objectSpacing = 0.08f;
+        [Tooltip("Cap the editor frame rate. Uncapped, this tiny scene ran at ~1400 fps " +
+                 "(recording 131905), loading the Mac for no visual gain. 0 = no cap.")]
+        public int targetFrameRate = 60;
+        [Tooltip("Top-left status line: video fps, packet rate, hand %, rejected jumps, pose. " +
+                 "It is recorded too, so a video shows WHY something went missing.")]
+        public bool showStreamStatus = true;
+        [Tooltip("Auto re-center when the streamed camera position jumps this far (m) in one " +
+                 "frame — ARKit relocalisation / session reset")]
+        public float poseJumpRecenter = 0.5f;
         [Tooltip("Record the Game view to <project>/Recordings/*.mp4 while playing " +
                  "(GameViewRecorder; needs ffmpeg — brew install ffmpeg)")]
         public bool recordGameView = true;
@@ -64,9 +73,21 @@ namespace HandMesh.HandGrab
         bool _wasStreaming;
         float _recenterAt = -1f;        // Time.time of a pending auto re-center, <0 = none
         const float SettleSec = 0.3f;   // let the camera pose smoothing catch up first
+        Vector3 _prevCamPos;
+        bool _hasPrevCamPos;
+        // stream status, refreshed once per second
+        float _statT;
+        int _statVideo0, _statPkt0, _statHand0;
+        string _status = "";
+        GUIStyle _statusStyle;
 
         void Start()
         {
+            if (targetFrameRate > 0)
+            {
+                QualitySettings.vSyncCount = 0;   // targetFrameRate is ignored while vSync is on
+                Application.targetFrameRate = targetFrameRate;
+            }
             if (followDeviceCamera) mirrorX = false;   // mirroring breaks a moving camera
             // --- camera at the sensor pose, looking down +Z ---
             var cam = Camera.main;
@@ -153,10 +174,22 @@ namespace HandMesh.HandGrab
                     _placedOnPose = true;
                     _recenterAt = Time.time + SettleSec;
                 }
-                bool streaming = _video != null ? _video.IsReceiving : posed;
+                // resume = packets flow again after a 1 s gap. Joint packets, not the video:
+                // the hand stream keeps working even when the video background does not.
+                bool streaming = Time.time - _recv.LastPacketTime < 1f;
                 if (streaming && !_wasStreaming && _placedOnPose)
                     _recenterAt = Time.time + SettleSec;
                 _wasStreaming = streaming;
+
+                if (_recv.HasCameraPose)
+                {
+                    Vector3 cp = _recv.CameraPosition;
+                    if (_hasPrevCamPos && _placedOnPose && poseJumpRecenter > 0f
+                        && (cp - _prevCamPos).magnitude > poseJumpRecenter)
+                        _recenterAt = Time.time + SettleSec;
+                    _prevCamPos = cp;
+                    _hasPrevCamPos = true;
+                }
             }
             if (_recenterAt >= 0f && Time.time >= _recenterAt)
             {
@@ -164,6 +197,36 @@ namespace HandMesh.HandGrab
                 Recenter();
             }
             if (Input.GetKeyDown(KeyCode.R)) Recenter();
+            UpdateStatus();
+        }
+
+        void UpdateStatus()
+        {
+            if (!showStreamStatus || _recv == null) return;
+            float now = Time.unscaledTime;
+            if (now - _statT < 1f) return;
+            float dt = now - _statT;
+            int video = _video != null ? _video.FrameCount : 0;
+            int pkt = _recv.PacketCount, hand = _recv.HandCount;
+            int dp = pkt - _statPkt0;
+            _status = $"video {(video - _statVideo0) / dt:0} fps | packets {dp / dt:0}/s | " +
+                      $"hand {(dp > 0 ? 100f * (hand - _statHand0) / dp : 0f):0}% | " +
+                      $"jumps rejected {_recv.RejectedJumps} | " +
+                      $"pose {(_recv.HasCameraPose ? "ok" : "none")} | render {Time.frameCount / Mathf.Max(now, 1e-3f):0} fps avg";
+            _statT = now;
+            _statVideo0 = video; _statPkt0 = pkt; _statHand0 = hand;
+        }
+
+        void OnGUI()
+        {
+            if (!showStreamStatus || string.IsNullOrEmpty(_status)) return;
+            if (_statusStyle == null)
+                _statusStyle = new GUIStyle(GUI.skin.label) { fontSize = 13, fontStyle = FontStyle.Bold };
+            var r = new Rect(10, 30, 900, 22);   // below the recorder's REC stamp
+            _statusStyle.normal.textColor = Color.black;
+            GUI.Label(new Rect(r.x + 1, r.y + 1, r.width, r.height), _status, _statusStyle);
+            _statusStyle.normal.textColor = new Color(0.85f, 0.95f, 1f);
+            GUI.Label(r, _status, _statusStyle);
         }
 
         /// <summary>Place the table + grabbables `objectDistance` along the camera's view

@@ -39,10 +39,24 @@ namespace HandMesh.HandGrab
         [Tooltip("Seconds without a detected hand before IsTracked goes false")]
         public float trackingTimeout = 0.3f;
 
+        [Header("Jump rejection")]
+        [Tooltip("A new frame whose wrist moved faster than this (m/s, camera frame) is treated " +
+                 "as an outlier (wrong LiDAR root depth / detector misfire) and ignored")]
+        public float maxWristSpeed = 3.0f;
+        [Tooltip("Accept the new position anyway after this many consecutive outliers — the " +
+                 "hand really did move there")]
+        public int jumpConfirmFrames = 3;
+
         /// <summary>Latest joints in world space; valid only while IsTracked.</summary>
         public Vector3[] Joints { get; } = new Vector3[JointCount];
         public bool IsTracked { get; private set; }
         public float StreamFps { get; private set; }
+        /// <summary>Packets / hand detections / rejected jumps received so far.</summary>
+        public int PacketCount { get; private set; }
+        public int HandCount { get; private set; }
+        public int RejectedJumps { get; private set; }
+        /// <summary>Time.time of the last packet (hand or not), -999 = never.</summary>
+        public float LastPacketTime { get; private set; } = -999f;
 
         /// <summary>True once a packet carried the device camera pose ("cp"/"cq").</summary>
         public bool HasCameraPose { get; private set; }
@@ -75,6 +89,10 @@ namespace HandMesh.HandGrab
         double _latestT;
         float _latestFps;
         float _lastDetTime = -999f;
+        double _prevT = double.NaN;      // packet time already consumed
+        Vector3 _acceptedWrist;          // raw camera-frame wrist of the last accepted frame
+        double _acceptedT;
+        int _outliers;                   // consecutive rejected frames
         OneEuroFilterV3[] _filters;
 
         void OnEnable()
@@ -153,6 +171,23 @@ namespace HandMesh.HandGrab
             }
             if (fov > 1f) DeviceFovDeg = fov;
 
+            bool fresh = t != _prevT;   // Update runs faster than packets arrive
+            if (fresh)
+            {
+                _prevT = t;
+                PacketCount++;
+                LastPacketTime = Time.time;
+                if (raw != null)
+                {
+                    HandCount++;
+                    if (IsJump(raw, t)) raw = null;   // keep showing the last good pose
+                }
+            }
+            else if (raw != null && _outliers > 0)
+            {
+                raw = null;   // same (rejected) packet again
+            }
+
             if (raw != null)
             {
                 _lastDetTime = Time.time;
@@ -171,6 +206,31 @@ namespace HandMesh.HandGrab
             if (!tracked && IsTracked)
                 foreach (var f in _filters) f.Reset();
             IsTracked = tracked;
+        }
+
+        // Wrist speed gate on the RAW camera-frame joints. Re-acquiring after a tracking
+        // loss is always accepted; a run of jumpConfirmFrames outliers is accepted too
+        // (filters reset so the hand snaps instead of sliding across the gap).
+        bool IsJump(float[] raw, double t)
+        {
+            var wrist = new Vector3(raw[0], raw[1], raw[2]);
+            bool reacquire = Time.time - _lastDetTime >= trackingTimeout;
+            if (!reacquire)
+            {
+                float dt = Mathf.Max((float)(t - _acceptedT), 1f / 60f);
+                if ((wrist - _acceptedWrist).magnitude / dt > maxWristSpeed
+                    && ++_outliers < jumpConfirmFrames)
+                {
+                    RejectedJumps++;
+                    return true;
+                }
+                if (_outliers >= jumpConfirmFrames)
+                    foreach (var f in _filters) f.Reset();
+            }
+            _outliers = 0;
+            _acceptedWrist = wrist;
+            _acceptedT = t;
+            return false;
         }
     }
 }
