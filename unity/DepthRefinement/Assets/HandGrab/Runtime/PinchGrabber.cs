@@ -33,6 +33,10 @@ namespace HandMesh.HandGrab
         [Tooltip("Index-extension ratio counting as 'open'. Pinch/curl ≈ 1.0-1.2, open ≈ 1.6+. "
                + "Lower = easier release; raise if noise drops the object again.")]
         public float openExtendRatio = 1.2f;
+        [Tooltip("The held object follows the hand only while the pinch is this tight (m). As " +
+                 "soon as the fingers start to open it stays put, and on release it is left " +
+                 "exactly where the pinch was last firm — opening the hand no longer drags it.")]
+        public float firmPinchDistance = 0.045f;
 
         HandStreamReceiver _recv;
         Grabbable _held;
@@ -41,6 +45,9 @@ namespace HandMesh.HandGrab
         bool _pinching;
         float _pinchDistSm = -1f;       // EMA of the thumb-index distance (spike filter)
         float _openSince = -1f;         // Time.time when the open pose began, -1 = not open
+        Vector3 _firmPos;               // held-object pose at the last firm-pinch frame
+        Quaternion _firmRot;
+        bool _following;                // held object currently tracks the hand
 
         // velocity estimate for throw-on-release
         Vector3 _prevPinch;
@@ -66,7 +73,12 @@ namespace HandMesh.HandGrab
             {
                 // tracking lost (0.3 s timeout upstream) → gentle drop, no throw:
                 // the last velocity estimate is noise from the dying track, not a gesture.
-                if (_held != null) { _held.OnRelease(Vector3.zero, Vector3.zero); _held = null; }
+                if (_held != null)
+                {
+                    _held.SnapTo(_firmPos, _firmRot);
+                    _held.OnRelease(Vector3.zero, Vector3.zero);
+                    _held = null;
+                }
                 _pinching = false;
                 _pinchDistSm = -1f;
                 _openSince = -1f;
@@ -112,7 +124,27 @@ namespace HandMesh.HandGrab
             }
 
             if (_held != null)
-                _held.MoveTo(pinch + handRot * _posOffset, handRot * _rotOffset);
+            {
+                if (_pinchDistSm <= firmPinchDistance)
+                {
+                    if (!_following)
+                    {
+                        // fingers closed again without releasing: re-anchor on the frozen
+                        // pose so the object doesn't jump to where the hand moved meanwhile
+                        var inv = Quaternion.Inverse(handRot);
+                        _rotOffset = inv * _firmRot;
+                        _posOffset = inv * (_firmPos - pinch);
+                        _following = true;
+                    }
+                    _firmPos = pinch + handRot * _posOffset;
+                    _firmRot = handRot * _rotOffset;
+                    _held.MoveTo(_firmPos, _firmRot);
+                }
+                else
+                {
+                    _following = false;   // opening: hold still until release is confirmed
+                }
+            }
         }
 
         bool IsHandOpen(Vector3[] j)
@@ -141,11 +173,15 @@ namespace HandMesh.HandGrab
             _rotOffset = inv * best.transform.rotation;
             _posOffset = inv * (best.transform.position - pinch);
             _velocity = _angVelocity = Vector3.zero;
+            _firmPos = best.transform.position;
+            _firmRot = best.transform.rotation;
+            _following = true;
             best.OnGrab();
         }
 
         void Release()
         {
+            _held.SnapTo(_firmPos, _firmRot);   // no drift from the opening fingers / interpolation
             _held.OnRelease(_velocity, _angVelocity);
             _held = null;
         }

@@ -59,6 +59,21 @@ namespace HandMesh.HandGrab
         [Tooltip("Auto re-center when the streamed camera position jumps this far (m) in one " +
                  "frame — ARKit relocalisation / session reset")]
         public float poseJumpRecenter = 0.5f;
+
+        [Header("Hand in front / auto return")]
+        [Tooltip("See-through objects while the hand is in front of them (HandOcclusionFade)")]
+        public bool fadeWhenHandInFront = true;
+        [Tooltip("Return released objects to their place in the centred row")]
+        public bool autoReturn = true;
+        [Tooltip("Seconds after release before an object glides back home")]
+        public float returnDelay = 3f;
+        [Tooltip("An object that left the screen or came closer to the camera than " +
+                 "minCameraDistance returns after only this long (s)")]
+        public float lostReturnDelay = 0.5f;
+        [Tooltip("Metres; closer than this counts as lost (it would fill the screen)")]
+        public float minCameraDistance = 0.12f;
+        [Tooltip("Return glide speed (1/s, exponential)")]
+        public float returnSpeed = 6f;
         [Tooltip("Record the Game view to <project>/Recordings/*.mp4 while playing " +
                  "(GameViewRecorder; needs ffmpeg — brew install ffmpeg)")]
         public bool recordGameView = true;
@@ -67,6 +82,9 @@ namespace HandMesh.HandGrab
         Transform _table;
         readonly System.Collections.Generic.List<Transform> _grabbables = new();
         readonly System.Collections.Generic.List<Vector3> _offsets = new();   // in the shelf frame
+        readonly System.Collections.Generic.List<bool> _returning = new();
+        Vector3 _homeAnchor;            // shelf pose of the last (re)centering
+        Quaternion _homeYaw = Quaternion.identity;
         StreamedCameraDriver _driver;
         VideoStreamReceiver _video;
         bool _placedOnPose;
@@ -118,6 +136,7 @@ namespace HandMesh.HandGrab
             hand.AddComponent<HandSkeleton>();
             hand.AddComponent<PinchGrabber>();
             if (showDistanceGuide) hand.AddComponent<GrabProximityIndicator>();
+            if (fadeWhenHandInFront) hand.AddComponent<HandOcclusionFade>();
 
             if (followDeviceCamera)
             {
@@ -148,6 +167,7 @@ namespace HandMesh.HandGrab
                 gameObject.AddComponent<GameViewRecorder>();
 
             // --- grabbables: a row centred on the view (floating, or dropping onto the table) ---
+            _homeAnchor = new Vector3(0f, objectHeight, objectDistance);
             Spawn(PrimitiveType.Sphere, new Vector3(-objectSpacing, objectHeight, objectDistance),
                   0.08f * objectScale, new Color(0.85f, 0.35f, 0.3f));
             Spawn(PrimitiveType.Cube, new Vector3(0f, objectHeight, objectDistance),
@@ -197,6 +217,7 @@ namespace HandMesh.HandGrab
                 Recenter();
             }
             if (Input.GetKeyDown(KeyCode.R)) Recenter();
+            if (autoReturn) ReturnObjects();
             UpdateStatus();
         }
 
@@ -243,6 +264,8 @@ namespace HandMesh.HandGrab
             Vector3 anchor = ct.position + ct.forward * objectDistance
                              + Vector3.up * objectHeight;
 
+            _homeAnchor = anchor;
+            _homeYaw = yaw;
             if (_table != null)
                 _table.SetPositionAndRotation(anchor - Vector3.up * 0.05f, yaw);
             for (int i = 0; i < _grabbables.Count; i++)
@@ -250,20 +273,54 @@ namespace HandMesh.HandGrab
                 Transform g = _grabbables[i];
                 if (g == null) continue;
                 var grab = g.GetComponent<Grabbable>();
-                if (grab != null && grab.IsHeld) continue;
-                var rb = g.GetComponent<Rigidbody>();
-                if (rb != null && !rb.isKinematic)
-                {
-#if UNITY_6000_0_OR_NEWER
-                    rb.linearVelocity = Vector3.zero;
-#else
-                    rb.velocity = Vector3.zero;
-#endif
-                    rb.angularVelocity = Vector3.zero;
-                }
-                g.SetPositionAndRotation(anchor + yaw * _offsets[i], yaw);
+                if (grab == null || grab.IsHeld) continue;
+                grab.SnapTo(HomePosition(i), yaw);
+                _returning[i] = false;
             }
             Debug.Log($"[HandGrabDemo] shelf re-centered {objectDistance:0.00} m in front of the camera");
+        }
+
+        Vector3 HomePosition(int i) => _homeAnchor + _homeYaw * _offsets[i];
+
+        // Released objects glide back to their slot in the row: after returnDelay, or after
+        // lostReturnDelay if they left the screen / came too close to the camera.
+        void ReturnObjects()
+        {
+            var cam = Camera.main;
+            float k = 1f - Mathf.Exp(-returnSpeed * Time.deltaTime);
+            for (int i = 0; i < _grabbables.Count; i++)
+            {
+                Transform g = _grabbables[i];
+                if (g == null) continue;
+                var grab = g.GetComponent<Grabbable>();
+                if (grab == null || grab.IsHeld) { _returning[i] = false; continue; }
+
+                Vector3 home = HomePosition(i);
+                bool away = (g.position - home).sqrMagnitude > 1e-6f
+                            || Quaternion.Angle(g.rotation, _homeYaw) > 0.5f;
+                if (!away) { _returning[i] = false; continue; }
+
+                if (!_returning[i])
+                {
+                    if (grab.ReleasedAt < 0f) continue;          // never grabbed: leave it
+                    float since = Time.time - grab.ReleasedAt;
+                    bool lost = cam != null && IsLost(cam, g.position);
+                    _returning[i] = since >= returnDelay || (lost && since >= lostReturnDelay);
+                    if (!_returning[i]) continue;
+                }
+
+                Vector3 p = Vector3.Lerp(g.position, home, k);
+                Quaternion r = Quaternion.Slerp(g.rotation, _homeYaw, k);
+                if ((p - home).sqrMagnitude < 1e-6f) { p = home; r = _homeYaw; _returning[i] = false; }
+                grab.SnapTo(p, r);
+            }
+        }
+
+        bool IsLost(Camera cam, Vector3 pos)
+        {
+            if (Vector3.Distance(cam.transform.position, pos) < minCameraDistance) return true;
+            Vector3 v = cam.WorldToViewportPoint(pos);
+            return v.z <= 0f || v.x < 0f || v.x > 1f || v.y < 0f || v.y > 1f;
         }
 
         void Spawn(PrimitiveType type, Vector3 pos, float size, Color color)
@@ -280,6 +337,7 @@ namespace HandMesh.HandGrab
             go.AddComponent<Grabbable>().floatOnRelease = floatObjects;
             _grabbables.Add(go.transform);
             _offsets.Add(new Vector3(pos.x, pos.y - objectHeight, 0f));  // shelf-frame offset
+            _returning.Add(false);
         }
     }
 }

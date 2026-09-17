@@ -74,6 +74,18 @@ python unity_stream_hand.py --udp <unity-pc-ip>:9750
   넘어 **카메라 쪽으로 가면 `−`** (몸 쪽에서 손을 뻗으면 `+ → −`).
   두 번째 줄 `depth ±x cm`는 오브젝트 중심과 손의 깊이 차이 자체 (0 = 같은 깊이).
 
+## 잡기 동작 보정
+
+- **놓을 때 밀림 없음** (`PinchGrabber.firmPinchDistance`, 기본 4.5cm) — 손가락이 벌어지기
+  시작하면 물체는 그 자리에 멈추고, 놓기가 확정되면 **마지막으로 꽉 쥐고 있던 위치**에 그대로 놓인다.
+  놓기 전에 다시 쥐면 멈춘 위치에서 이어서 따라온다.
+- **손이 앞에 있으면 반투명** (`HandGrabDemo.fadeWhenHandInFront` → `HandOcclusionFade`) —
+  손 관절 중 하나라도 물체 중심보다 카메라에 가깝고 화면에서 겹치면 불투명도 `fadedAlpha`(0.35)로.
+  거리 표시용 와이어프레임 박스는 그대로 보인다.
+- **자동 복귀** (`HandGrabDemo.autoReturn`) — 놓은 뒤 `returnDelay`(3초)가 지나면 가운데 줄의
+  제자리로 부드럽게 돌아간다. 화면 밖으로 나갔거나 카메라에 `minCameraDistance`(12cm)보다 가까우면
+  `lostReturnDelay`(0.5초) 뒤 바로 복귀. `R`(재배치)도 이 제자리를 기준으로 한다.
+
 ## 튜닝 포인트
 
 - `HandStreamReceiver.mirrorX` — 전면 카메라면 켜두는 게 자연스러움 (기본 on)
