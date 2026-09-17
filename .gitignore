@@ -18,6 +18,7 @@ model_tf/
 # claude local config / memory (not project code) — but keep BMAD skill registrations
 .claude/*
 !.claude/skills/
+!.claude/agents/
 
 
 
@@ -347,3 +348,11 @@ unity/DepthRefinement/Library/
 unity/DepthRefinement/UserSettings/
 unity/DepthRefinement/Assets/Temp/
 unity/DepthRefinement/Assets/Temp.meta
+
+# iOS build output (Unity -> Xcode -> ipa); see docs/UNITY_IOS_BUILD.md
+unity/DepthRefinement/build/
+unity/DepthRefinement/build-artifacts/
+unity/DepthRefinement/Logs/
+*.xcarchive/
+*.ipa
+DerivedData/
