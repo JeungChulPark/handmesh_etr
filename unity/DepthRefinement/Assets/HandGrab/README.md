@@ -82,7 +82,9 @@ python unity_stream_hand.py --udp <unity-pc-ip>:9750
 - **손이 앞에 있으면 반투명** (`HandGrabDemo.fadeWhenHandInFront` → `HandOcclusionFade`) —
   손 관절 중 하나라도 물체 중심보다 카메라에 가깝고 화면에서 겹치면 불투명도 `fadedAlpha`(0.35)로.
   거리 표시용 와이어프레임 박스는 그대로 보인다.
-- **자동 복귀** (`HandGrabDemo.autoReturn`) — 놓은 뒤 `returnDelay`(3초)가 지나면 가운데 줄의
+- **잡고 있는 동안 다른 물체 박스는 회색** — 박스 색(회색→노랑→초록)은 "지금 핀치하면 잡힌다"는
+  뜻인데, 이미 하나를 쥐고 있으면 다른 물체는 잡을 수 없으므로 색을 바꾸지 않는다.
+- **자동 복귀** (`HandGrabDemo.autoReturn`, 기본 off) — 켜면 놓은 뒤 `returnDelay`(3초)가 지나면 가운데 줄의
   제자리로 부드럽게 돌아간다. 화면 밖으로 나갔거나 카메라에 `minCameraDistance`(12cm)보다 가까우면
   `lostReturnDelay`(0.5초) 뒤 바로 복귀. `R`(재배치)도 이 제자리를 기준으로 한다.
 

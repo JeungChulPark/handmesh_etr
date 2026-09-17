@@ -167,7 +167,13 @@ namespace HandMesh.HandGrab
             float nearestDist = float.MaxValue;
             bool holding = false;
 
-            foreach (var g in FindObjectsOfType<Grabbable>())
+            var all = FindObjectsOfType<Grabbable>();
+            // while something is held no other object can be grabbed, so the others must
+            // not light up yellow/green ("pinch now grabs it") — keep them neutral grey
+            bool holdingAny = false;
+            foreach (var g in all) holdingAny |= g.IsHeld;
+
+            foreach (var g in all)
             {
                 if (!_boxes.TryGetValue(g, out BoxVis box) || box.root == null)
                     _boxes[g] = box = MakeBox(g);
@@ -175,7 +181,7 @@ namespace HandMesh.HandGrab
                 if (g.IsHeld) { holding = true; box.root.SetActive(false); continue; }
                 box.root.SetActive(true);
 
-                if (!tracked) { SetBoxColor(box, farColor); continue; }
+                if (!tracked || holdingAny) { SetBoxColor(box, farColor); continue; }
 
                 Vector3 p = g.GetComponent<Collider>().ClosestPoint(pinch);
                 float d = Vector3.Distance(p, pinch);

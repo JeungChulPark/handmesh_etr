@@ -64,7 +64,7 @@ namespace HandMesh.HandGrab
         [Tooltip("See-through objects while the hand is in front of them (HandOcclusionFade)")]
         public bool fadeWhenHandInFront = true;
         [Tooltip("Return released objects to their place in the centred row")]
-        public bool autoReturn = true;
+        public bool autoReturn = false;
         [Tooltip("Seconds after release before an object glides back home")]
         public float returnDelay = 3f;
         [Tooltip("An object that left the screen or came closer to the camera than " +
@@ -97,6 +97,9 @@ namespace HandMesh.HandGrab
         float _statT;
         int _statVideo0, _statPkt0, _statHand0;
         string _status = "";
+        // Bump on every HandGrab change: it is printed in the recorded status line, so a video
+        // shows which code actually ran (a stale pull / compile error keeps the old build).
+        const string CodeVersion = "hg-2026-09-17f";
         GUIStyle _statusStyle;
 
         void Start()
@@ -230,7 +233,7 @@ namespace HandMesh.HandGrab
             int video = _video != null ? _video.FrameCount : 0;
             int pkt = _recv.PacketCount, hand = _recv.HandCount;
             int dp = pkt - _statPkt0;
-            _status = $"video {(video - _statVideo0) / dt:0} fps | packets {dp / dt:0}/s | " +
+            _status = $"{CodeVersion} | video {(video - _statVideo0) / dt:0} fps | packets {dp / dt:0}/s | " +
                       $"hand {(dp > 0 ? 100f * (hand - _statHand0) / dp : 0f):0}% | " +
                       $"jumps rejected {_recv.RejectedJumps} | " +
                       $"pose {(_recv.HasCameraPose ? "ok" : "none")} | render {Time.frameCount / Mathf.Max(now, 1e-3f):0} fps avg";

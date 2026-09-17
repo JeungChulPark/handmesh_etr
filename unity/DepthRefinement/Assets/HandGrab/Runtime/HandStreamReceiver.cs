@@ -190,7 +190,10 @@ namespace HandMesh.HandGrab
 
             if (raw != null)
             {
-                _lastDetTime = Time.time;
+                // only a NEW packet counts as a detection: when the stream stops, _latest keeps
+                // the last hand forever, which froze the skeleton on screen (recording 141958,
+                // 22-36 s: packets 0/s yet the hand stayed "tracked")
+                if (fresh) _lastDetTime = Time.time;
                 for (int i = 0; i < JointCount; i++)
                 {
                     // camera frame (x right, y down, z fwd) -> Unity (x right, y up, z fwd)
