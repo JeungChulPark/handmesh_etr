@@ -151,7 +151,7 @@ MonoBehaviour:
   udpPort: 9750
   mirrorX: 1
   objectDistance: 0.32
-  objectHeight: 0.05
+  objectHeight: 0
   showVideo: 1
   videoPort: 9760
   followDeviceCamera: 1

@@ -28,6 +28,9 @@ namespace HandMesh.HandGrab
         public float smoothing = 20f;
 
         bool _hasPose;
+
+        /// <summary>True once a streamed pose has actually been applied to the transform.</summary>
+        public bool HasPose => _hasPose;
         Vector3 _pos;
         Quaternion _rot = Quaternion.identity;
 
