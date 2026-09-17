@@ -15,9 +15,9 @@ shows why:
 | Concern | Current behaviour | Source |
 |---------|-------------------|--------|
 | Network output | 21×3 **root-relative** joints only (no global position) | `models/mobrecon_ds.py:156` |
-| Depth as input | RGB+depth concatenated at the stem conv, depth weights zero-init | `models/densestack.py:641`, `train_mobrecon_rgbd.py:209` |
-| Absolute position | recovered **outside** the net: `root = backproject(wrist_px, depth@wrist, K)` | `infer_rgbd_femtobolt.py:21` |
-| Loss | masked root-rel L2 + light 2D reproj — **no position term** | `train_mobrecon_rgbd.py:292` |
+| Depth as input | RGB+depth concatenated at the stem conv, depth weights zero-init | `models/densestack.py:641`, `scripts/train/train_mobrecon_rgbd.py:209` |
+| Absolute position | recovered **outside** the net: `root = backproject(wrist_px, depth@wrist, K)` | `scripts/infer/infer_rgbd_femtobolt.py:21` |
+| Loss | masked root-rel L2 + light 2D reproj — **no position term** | `scripts/train/train_mobrecon_rgbd.py:292` |
 
 The diagnosis:
 
@@ -61,7 +61,7 @@ so the low-res, noisy, sensor-specific depth domain is decoupled from RGB.
 *Solves #3 (domain/resolution mismatch).*
 
 ### (b) Explicit Translation Head
-Pull the root recovery that lives in `infer_rgbd_femtobolt.py` *into* the network
+Pull the root recovery that lives in `scripts/infer/infer_rgbd_femtobolt.py` *into* the network
 and supervise it directly. `TranslationHead(depth_feat, pose_latent) → root(x,y,z)`.
 It sees the whole depth feature map, not one wrist pixel → robust to holes.
 *Solves #1 and #2.*
@@ -116,11 +116,11 @@ Ablation knob: zero the depth stream → `L_root` must collapse (reproduce the
 Aligned with the finalised ToF deploy target (LiDAR-sim aug + ToF warmup):
 
 1. **Warm-start** — graft `pretrain/100.pt` into the RGB backbone (reuse current
-   stem-graft logic, `train_mobrecon_rgbd.py:209`). DepthEncoder/Head init fresh.
+   stem-graft logic, `scripts/train/train_mobrecon_rgbd.py:209`). DepthEncoder/Head init fresh.
 2. **Real-depth pretrain** — DexYCB + HO3D (real sensor depth) train the full
    dual-stream incl. TranslationHead.
 3. **LiDAR-sim fine-tune** — existing `--lidar_sim` aug (downsample · holes ·
-   noise, `ablation_depth_lidar.py`) + MSRA(ToF) mixed in, to match iPhone LiDAR
+   noise, `scripts/diag/ablation_depth_lidar.py`) + MSRA(ToF) mixed in, to match iPhone LiDAR
    statistics.
 4. **Confidence-dropout aug** — randomly invalidate depth (partial + full) so the
    gate (c) learns graceful fallback.
@@ -164,7 +164,7 @@ Implemented as **separate files** (early-fusion baseline left untouched for comp
 |------|------|
 | `models/mobrecon_dualstream.py` | **New.** `RGBPoseBackbone` (subclasses `DenseStack_Backbone_like_prev`, also returns pooled pose latent — no edit to densestack.py), `DepthEncoder` (~59K params), `TranslationHead` (root+scale, scale init≈1.0), `MobRecon_DualStream` (+ `_onnx` twin). Total ~5.4M params. |
 | `datasets/hanco_ty.py` | **Additive opt-in** `return_abs_depth=False`: when True, `__getitem__` also returns `depth_med` (raw-depth median = absolute distance). Default off ⇒ baseline byte-identical (verified). |
-| `train_mobrecon_dualstream.py` | **New.** Losses `L_pose + w_root·L_root + w_scale·L_scale + w_abs·L_abs + w2d·L_2d`; warm-start remaps `backbone.*`→`rgb_backbone.*` (746/808 loaded); logs root-rel + abs MPJPE + root error; same seed(0)/0.95 split as baseline. |
+| `scripts/train/train_mobrecon_dualstream.py` | **New.** Losses `L_pose + w_root·L_root + w_scale·L_scale + w_abs·L_abs + w2d·L_2d`; warm-start remaps `backbone.*`→`rgb_backbone.*` (746/808 loaded); logs root-rel + abs MPJPE + root error; same seed(0)/0.95 split as baseline. |
 
 Smoke-verified: forward shapes, gradient flow into all three branches, rgb_only
 fallback, warm-start key mapping, dataset opt-in + default-off parity.
@@ -200,7 +200,7 @@ being blind to depth. Two of the three runs hit a transient CUDA launch-timeout
 LiDAR-sim curriculum on `ds_hybrid` → Core ML export (inference `depth_med` =
 median of raw ARKit `sceneDepth` over the hand region).
 
-## 6d. PA-MPJPE evaluation (eval_pa_mpjpe.py, 8000 HanCo val frames, 2026-06-18)
+## 6d. PA-MPJPE evaluation (scripts/eval/eval_pa_mpjpe.py, 8000 HanCo val frames, 2026-06-18)
 
 | Model | PA-MPJPE | root-rel | abs | root err | PCK-AUC(PA) |
 |-------|----------|----------|-----|----------|-------------|
@@ -217,7 +217,7 @@ eval script, so PA-MPJPE n/a; its root-rel was 15.28 — ds_hybrid_ft2 beats it 
 ## 6e. Real-depth curriculum (ds_realdepth, started 2026-06-18)
 
 Fine-tune ds_hybrid_ft2 on hanco + DexYCB + HO3D (787,689 frames; real sensor
-depth) — `run_realdepth.sh`, warm-start, pose_in_chans=4, lr 5e-5 cosine→0, 8 ep
+depth) — `scripts/run/run_realdepth.sh`, warm-start, pose_in_chans=4, lr 5e-5 cosine→0, 8 ep
 + early-stop (abs patience 3). Adapts the depth stream from synthetic render to
 real sensor noise/holes ahead of the iPhone LiDAR target. Results pending.
 

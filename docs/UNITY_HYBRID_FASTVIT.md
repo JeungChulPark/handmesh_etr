@@ -17,7 +17,7 @@ the fusion is C#. The FastViT model is **backbone-primary** (`mode="backbone"`):
     Δp    = MLP head([p_cnn, p_geom, feat])            # learned refinement
     p     = (p_cnn + Δp) root-relativised
 
-The head is part of the model, so `export_hybrid_fastvit_onnx.py` exports the WHOLE
+The head is part of the model, so `scripts/export/export_hybrid_fastvit_onnx.py` exports the WHOLE
 `HybridLifter` forward as one graph. Sentis-safety rewrites (einsum→bmm,
 BatchNorm1d→explicit affine) are bit-exact vs the training model (0.00e+00), timm
 reparameterisation drift 0.0004 mm, ONNX-runtime parity 0.0013 mm.
@@ -34,13 +34,13 @@ reparameterisation drift 0.0004 mm, ONNX-runtime parity 0.0013 mm.
 
 Output: `keypoints [1,21,3]` — **root-relative** metric 3D (wrist = 0).
 `HybridFastVitHandProvider` anchors it at the wrist landmark back-projected to the
-sensor wrist depth (same anchoring as `infer_hybrid.py`).
+sensor wrist depth (same anchoring as `scripts/infer/infer_hybrid.py`).
 
 ## What was added (all additive, non-breaking)
 
 | Path | Change |
 |---|---|
-| `export_hybrid_fastvit_onnx.py` | **new** — full-model export + 3-way parity check |
+| `scripts/export/export_hybrid_fastvit_onnx.py` | **new** — full-model export + 3-way parity check |
 | `Assets/Models/hybrid_fastvit.onnx` | **new** — verified export of the deploy-best ckpt (epoch 31) |
 | `Assets/Runtime/Recon/HybridFastVitHandProvider.cs` | **new** — 5-input Sentis provider; reuses the crop-only `DualStreamHandProvider` hooks + `HandBboxBridge` landmarks (same wiring as B) |
 | `HandPoseModeController.cs` | `_fastvit` field — disabled in Server mode like the other on-device providers |
@@ -68,7 +68,7 @@ sensor wrist depth (same anchoring as `infer_hybrid.py`).
 * **Per-joint depth quality** — unlike B (wrist-only), this model consumes ALL 21
   sampled depths (`z_use`, and `feat[:,2]`). `TrySampleDepthMetres` is a nearest
   sample; the Python path samples a 7×7 median of valid pixels (`sample_depth`,
-  `infer_hybrid.py`). ARKit LiDAR is dense/smooth so nearest is usually fine, but if
+  `scripts/infer/infer_hybrid.py`). ARKit LiDAR is dense/smooth so nearest is usually fine, but if
   fingertips flicker, port the median window into `TrySampleDepthMetres` first.
 * **Invalid depth** — joints with no depth get `z_use = z_ref` and `valid = 0`,
   matching training; the provider needs ≥1 valid sample per frame to emit a pose.
@@ -82,7 +82,7 @@ sensor wrist depth (same anchoring as `infer_hybrid.py`).
 ## Reproduce the export
 
 ```bash
-python export_hybrid_fastvit_onnx.py \
+python scripts/export/export_hybrid_fastvit_onnx.py \
     --ckpt mobrecon_ckpt/hybrid_sa12_replay_ft_bb_uv2d/best.pt \
     --out unity/DepthRefinement/Assets/Models/hybrid_fastvit.onnx
 # [parity] max|wrapper - HybridLifter| = 0.00e+00  (OK)

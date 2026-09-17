@@ -12,7 +12,7 @@ deterministically from the backbone's relative depth plus the sensor wrist depth
 
 | | |
 |---|---|
-| Class | `HybridLifter(mode="locked")` (`train_hybrid.py`) |
+| Class | `HybridLifter(mode="locked")` (`scripts/train/train_hybrid.py`) |
 | Learned net | `LargeModel_Extra_RGBD` backbone (`models/mobrecon_ds.py`) |
 | Params | ≈5.4M total (backbone **5.00M** + unused head 0.41M) |
 | Input | crop `[1,4,256,256]` + detector `uv[21,2]` + `z_use[21]` + `K[4]` |
@@ -104,10 +104,10 @@ Comparison: the pure Z-lifter baseline was 37.43 mm; the sibling `hybrid_A`
 
 * **Backbone only runs** — crop → `backbone` → keypoints; only Z (relative depth)
   is used, the rest is geometric fusion.
-* **ZED live:** `infer_zed_hybrid.py` (MediaPipe uv + ZED depth). NEURAL depth
+* **ZED live:** `scripts/infer/infer_zed_hybrid.py` (MediaPipe uv + ZED depth). NEURAL depth
   recommended — PERFORMANCE moved the root ~90 mm / pose ~104 mm
   (`docs/ZED_HYBRID_B_DEPLOY.md`).
-* **Unity:** backbone exported by `export_hybrid_b_onnx.py` →
+* **Unity:** backbone exported by `scripts/export/export_hybrid_b_onnx.py` →
   `hybrid_B_backbone.onnx` (`image[1,4,256,256] → keypoints[1,21,3]`, opset 17,
   parity 5.6e-8 vs `HybridLifter.backbone`). Fusion runs in `HybridBHandProvider.cs`
   using Apple Vision's 21 landmarks + LiDAR depth + intrinsics
@@ -134,11 +134,11 @@ Exported ONNX (backbone only): `image[1,4,256,256] → keypoints[1,21,3]`.
 | Path | Role |
 |---|---|
 | `mobrecon_ckpt/hybrid_B/best.pt` | trained checkpoint (ep21, 27.01 mm) |
-| `train_hybrid.py` | `HybridLifter` (locked/backbone modes) |
+| `scripts/train/train_hybrid.py` | `HybridLifter` (locked/backbone modes) |
 | `models/mobrecon_ds.py` | `LargeModel_Extra_RGBD` backbone wrapper |
 | `models/densestack.py` | `DenseStack_Backbone_like_prev` |
-| `export_hybrid_b_onnx.py` | backbone → ONNX (parity-checked) |
-| `infer_zed_hybrid.py` | live ZED inference |
+| `scripts/export/export_hybrid_b_onnx.py` | backbone → ONNX (parity-checked) |
+| `scripts/infer/infer_zed_hybrid.py` | live ZED inference |
 | `unity/.../Assets/Models/hybrid_B_backbone.onnx` | Unity model asset |
 | `unity/.../Assets/Runtime/Recon/HybridBHandProvider.cs` | Unity locked-fusion provider |
 

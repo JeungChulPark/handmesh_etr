@@ -83,15 +83,15 @@ RGB** (verified).
 
 ## 5. Offline inference & model comparison
 
-Script: **`infer_rgbd_captures.py`** — loads the captures, auto-rotates the sensor
+Script: **`scripts/infer/infer_rgbd_captures.py`** — loads the captures, auto-rotates the sensor
 frame upright (uprightness vote, see below), resizes 256×192 depth → RGB res, detects
 the hand (MediaPipe), runs the model, writes `cap_NNNN_pred[_tag].png/json` +
 `predictions_summary[_tag].csv` back into the folder.
 
 ```bash
-python infer_rgbd_captures.py --arch dualstream     # ds_anchor_gate/best.pt
-python infer_rgbd_captures.py --arch earlyfusion    # rgbd_real_0613/best.pt
-python infer_rgbd_captures.py --arch earlyfusion --dir rgbd_captures_03 --rotate 0
+python scripts/infer/infer_rgbd_captures.py --arch dualstream     # ds_anchor_gate/best.pt
+python scripts/infer/infer_rgbd_captures.py --arch earlyfusion    # rgbd_real_0613/best.pt
+python scripts/infer/infer_rgbd_captures.py --arch earlyfusion --dir rgbd_captures_03 --rotate 0
 ```
 
 > **Rotation-vote bug (fixed 2026-06-29).** `vote_rotation` used to pick the global
@@ -133,7 +133,7 @@ channel, depth_med **and** the anchor all see hand-only depth. Both contributors
 to be masked: depth_med (58→41) **and** the depth-channel background fed to the
 DepthEncoder (41→28).
 
-### Pose vs root — where the *remaining* error is (`diag_pose_vs_root.py`)
+### Pose vs root — where the *remaining* error is (`scripts/diag/diag_pose_vs_root.py`)
 
 Once root is fixed, what's left? With no 3-D GT, we use MediaPipe's 21 2-D landmarks
 as a pseudo-GT and similarity-Procrustes-align (remove translation/rotation/scale)
@@ -226,7 +226,7 @@ in-domain pose data later.
 on free-hand poses), and concluded the lever is **in-domain data, not architecture**.
 We acted on that without any rig or manual labels.
 
-### 7a. Pseudo-3D GT from captures (no rig) — `make_iphone_gt.py`
+### 7a. Pseudo-3D GT from captures (no rig) — `scripts/capture/make_iphone_gt.py`
 
 MediaPipe gives 21 2-D landmarks that are CORRECT on exactly the free-hand poses our
 model cramps (§5, GREEN vs RED). We lift them to metric 3-D and use them as GT:
@@ -249,7 +249,7 @@ spread hand, not a collapse). Reprojection matches MediaPipe tightly.
 
 `IPhoneCaptures_RGBD` emits the exact DexYCB_RGBD contract (4-ch 256 crop,
 root-aligned keypoints3D/2D, root, cam, **joint_valid**), so it concatenates in
-`train_mobrecon_rgbd.py --datasets ...,iphone --iphone_root <dir[,dir...]>` (multi-
+`scripts/train/train_mobrecon_rgbd.py --datasets ...,iphone --iphone_root <dir[,dir...]>` (multi-
 folder, comma list). Deployment has no segmentation, so the depth channel is
 **z-band hand-masked using the GT joint depth** (±0.12 m inside a padded bbox) —
 reproducing the training `depth_mode="hand_masked"` distribution and avoiding the
@@ -261,7 +261,7 @@ Run `ef_iphone_v1`: warm-start `rgbd_real_0613/best.pt`, train on 4 sessions
 (rgbd_captures + _01.._03, 961 frames; **session _04 HELD OUT**), lr 1e-5, w2d 0.1,
 batch 24, 25 ep, lidar_sim OFF. test_mpjpe 47 → 24 mm.
 
-Held-out eval (`eval_iphone_heldout.py` on rgbd_captures_04, Procrustes pose-shape
+Held-out eval (`scripts/eval/eval_iphone_heldout.py` on rgbd_captures_04, Procrustes pose-shape
 vs the MediaPipe pseudo-GT over valid joints, 230 frames):
 
 | model | pose-shape (median) | p25 | p75 | raw | scale s |
@@ -307,12 +307,12 @@ NOT need BigHand/HANDS17 (ToF pseudo-RGB, domain-mismatched — stays skipped).
 ## 9. File map
 
 - Unity: `unity/DepthRefinement/Assets/Runtime/Recon/*.cs`, `Assets/Plugins/iOS/HandPoseVision.swift`
-- Offline inference: `infer_rgbd_captures.py` (reuses `DualStreamHandPose` from
-  `infer_zed_dualstream.py` and `RGBDHandPose` from `infer_rgbd_femtobolt.py`)
-- **Pseudo-3D GT**: `make_iphone_gt.py` (captures → `cap_*_gt.json` + `_gtviz.png`)
+- Offline inference: `scripts/infer/infer_rgbd_captures.py` (reuses `DualStreamHandPose` from
+  `scripts/infer/infer_zed_dualstream.py` and `RGBDHandPose` from `scripts/infer/infer_rgbd_femtobolt.py`)
+- **Pseudo-3D GT**: `scripts/capture/make_iphone_gt.py` (captures → `cap_*_gt.json` + `_gtviz.png`)
 - **Training loader**: `datasets/iphone_captures.py` (`IPhoneCaptures_RGBD`, multi-root,
-  z-band hand-mask) wired in `train_mobrecon_rgbd.py --datasets iphone --iphone_root`
-- **Held-out eval**: `eval_iphone_heldout.py` (Procrustes pose-shape vs pseudo-GT)
+  z-band hand-mask) wired in `scripts/train/train_mobrecon_rgbd.py --datasets iphone --iphone_root`
+- **Held-out eval**: `scripts/eval/eval_iphone_heldout.py` (Procrustes pose-shape vs pseudo-GT)
 - Captures + predictions: `rgbd_captures/`, `rgbd_captures_01..04/` (5 sessions, ~1193 GT frames)
 - Models: `mobrecon_ckpt/ds_anchor_gate/best.pt` (dual-stream),
   `mobrecon_ckpt/rgbd_real_0613/best.pt` (early-fusion baseline),

@@ -367,10 +367,10 @@ class FreiHAND(Dataset):
             "K":_K,
         }
 
-# python .\datasets\freihand.py --cfg .\configs.yaml
+# python .\datasets\freihand.py --cfg .\configs\configs.yaml
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cfg", type=str, default=os.path.join('configs.yaml'))
+    parser.add_argument("--cfg", type=str, default=os.path.join('configs/configs.yaml'))
     parser.add_argument('--gpu', default=None, type=int, help='Specify a GPU device')
     
     opt = parser.parse_args()

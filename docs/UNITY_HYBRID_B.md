@@ -16,7 +16,7 @@ depth, and the camera intrinsics — then a deterministic fusion assembles the p
 
 ## What was done (verified, non-destructive)
 
-1. **`export_hybrid_b_onnx.py`** exports B's backbone (the only learned part) to
+1. **`scripts/export/export_hybrid_b_onnx.py`** exports B's backbone (the only learned part) to
    `unity/DepthRefinement/Assets/Models/hybrid_B_backbone.onnx`
    (`image[1,4,256,256] → keypoints[1,21,3]`, opset 17).
    Parity-checked: ONNX runtime output matches `HybridLifter.backbone` to **5.6e-8**
@@ -89,7 +89,7 @@ public bool TrySampleDepthMetres(float u01, float v01, out float z) {  // neares
 
 | Path | Role |
 |---|---|
-| `export_hybrid_b_onnx.py` | **new** — export B backbone → ONNX (parity-checked). |
+| `scripts/export/export_hybrid_b_onnx.py` | **new** — export B backbone → ONNX (parity-checked). |
 | `unity/.../Assets/Models/hybrid_B_backbone.onnx` | **new** — verified B backbone. |
 | `unity/.../Assets/Runtime/Recon/HybridBHandProvider.cs` | **new** — locked-fusion provider. |
 | `unity/.../Assets/Runtime/Recon/DualStreamHandProvider.cs` | reused crop pipeline (add hooks B). |

@@ -113,7 +113,7 @@ class ObMan(Dataset):
             "K": self.K,
         }
     
-# python .\datasets\freihand.py --cfg .\configs.yaml
+# python .\datasets\freihand.py --cfg .\configs\configs.yaml
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--cfg", type=str, default=os.path.join('misc', 'model', 'config.yaml'))

@@ -1,6 +1,6 @@
 # Dual-Stream Cross-Dataset Generalization Eval
 
-**Date:** 2026-06-25 · **Script:** `eval_pa_mpjpe.py` · **Frames:** 2016 per cell
+**Date:** 2026-06-25 · **Script:** `scripts/eval/eval_pa_mpjpe.py` · **Frames:** 2016 per cell
 (seed-0, 0.95/0.05 split of each set's train portion — comparable across models,
 not an official test benchmark). HanCo uses `--depth_source render`.
 

@@ -51,8 +51,8 @@ split is stricter than idx%5 (22.3 → 25.5) — confirms the leakage. replay-S/
 were interrupted (user stopped training) so the joint-vs-replay comparison on the
 session split is incomplete.
 
-**Files:** `train_mobrecon_rgbd.py` (new args above), `datasets/iphone_captures.py`
-(`split` param), `eval_iphone.py`, `run_joint_ablation.sh`, `run_joint_ablation_session.sh`.
+**Files:** `scripts/train/train_mobrecon_rgbd.py` (new args above), `datasets/iphone_captures.py`
+(`split` param), `scripts/eval/eval_iphone.py`, `scripts/run/run_joint_ablation.sh`, `scripts/run/run_joint_ablation_session.sh`.
 
 ---
 
@@ -78,7 +78,7 @@ Result (iPhone session eval): **25.46mm ≈ finetune-S 25.54mm — no gain.** Be
 the iPhone GT is itself MediaPipe-derived (circular) and the error is Z-dominated
 (2D doesn't help Z).
 
-### 2b. C — 2D + depth → 3D lifter (`train_lifter.py`)
+### 2b. C — 2D + depth → 3D lifter (`scripts/train/train_lifter.py`)
 
 Discard pixels; input per joint = (u,v) + depth sampled at (u,v). 0.6M MLP → 21×3.
 Result (iPhone pseudo-GT session eval): **23.42mm**, matching the full CNN at 1/100
@@ -86,7 +86,7 @@ the size — but still pseudo-GT circular.
 
 ---
 
-## 3. Z-only lifter + bone-length prior, on REAL GT (`train_zlifter.py`)
+## 3. Z-only lifter + bone-length prior, on REAL GT (`scripts/train/train_zlifter.py`)
 
 The definitive, circularity-free version of the user's idea: **keep MediaPipe 2D
 exactly, predict only per-joint depth.**
@@ -136,7 +136,7 @@ is only self-consistent within HO3D (would scramble a model shared with DexYCB).
 
 ---
 
-## 4. Deploy inference (`infer_zlifter.py`)
+## 4. Deploy inference (`scripts/infer/infer_zlifter.py`)
 
 Per frame (no crop, full image):
 
@@ -154,7 +154,7 @@ values (root_z ~58cm, depth-span ~16cm, anatomically-correct depth ordering).
 iPhone has no real 3D GT → deploy assessment is qualitative only.
 
 ```bash
-python infer_zlifter.py --dir rgbd_captures \
+python scripts/infer/infer_zlifter.py --dir rgbd_captures \
     --ckpt mobrecon_ckpt/zlifter_dex_ho3d/best.pt --tag zlift_v2
 ```
 
@@ -167,24 +167,24 @@ DEXYCB="/home/jucpark/DeepLearning/Datasets/Hand Dataset/DexYCB_full/data"
 HO3D="/home/jucpark/DeepLearning/Datasets/Hand Dataset/HO3D_full"
 
 # 1. cache real MediaPipe 2D (strided subset)
-python cache_mediapipe.py --dataset dexycb --root "$DEXYCB" --stride 8 --out cache/mp_dexycb.npz
-python cache_mediapipe.py --dataset ho3d   --root "$HO3D"   --stride 4 --out cache/mp_ho3d.npz
+python scripts/capture/cache_mediapipe.py --dataset dexycb --root "$DEXYCB" --stride 8 --out cache/mp_dexycb.npz
+python scripts/capture/cache_mediapipe.py --dataset ho3d   --root "$HO3D"   --stride 4 --out cache/mp_ho3d.npz
 
 # 2. train the Z-only lifter (real GT, hand-masked, bone prior)
-python train_zlifter.py --exp zlifter_dex_ho3d --datasets dexycb,ho3d --epoch 60
+python scripts/train/train_zlifter.py --exp zlifter_dex_ho3d --datasets dexycb,ho3d --epoch 60
 
 # 3. deploy inference on iPhone captures
-python infer_zlifter.py --dir rgbd_captures --ckpt mobrecon_ckpt/zlifter_dex_ho3d/best.pt
+python scripts/infer/infer_zlifter.py --dir rgbd_captures --ckpt mobrecon_ckpt/zlifter_dex_ho3d/best.pt
 ```
 
 ---
 
 ## 6. Artifacts
 
-**Scripts** — `cache_mediapipe.py`, `train_zlifter.py`, `infer_zlifter.py`,
-`train_lifter.py` (C), `infer_rgb_base.py` (base-RGB shape check), `eval_iphone.py`;
-edits to `train_mobrecon_rgbd.py`, `datasets/iphone_captures.py`,
-`infer_rgbd_captures.py`.
+**Scripts** — `scripts/capture/cache_mediapipe.py`, `scripts/train/train_zlifter.py`, `scripts/infer/infer_zlifter.py`,
+`scripts/train/train_lifter.py` (C), `scripts/infer/infer_rgb_base.py` (base-RGB shape check), `scripts/eval/eval_iphone.py`;
+edits to `scripts/train/train_mobrecon_rgbd.py`, `datasets/iphone_captures.py`,
+`scripts/infer/infer_rgbd_captures.py`.
 
 **Checkpoints** — `mobrecon_ckpt/zlifter_dex_ho3d/best.pt` (**best deploy: 37.4mm
 combined real-GT**), `zlifter_masked/`, `zlifter_dexycb/`, `lifter_s/` (C),
